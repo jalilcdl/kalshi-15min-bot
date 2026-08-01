@@ -1,0 +1,17 @@
+requests>=2.31
+
+# Dashboard (dashboard/app.py) — Streamlit Community Cloud installs exactly
+# this file, so these are pinned loosely but kept minimal on purpose.
+streamlit
+pandas<3.0
+numpy
+plotly
+pyarrow
+
+# model/strike_probability.py unpickles the fitted LogisticRegression
+# (model/strike_prob_model.pkl) on every dashboard load (live Scoreboard
+# "Model read" card + paper_trader.py) -- scikit-learn must be installed to
+# unpickle it, and joblib to load the file at all. NOT optional/research-only
+# anymore now that the Scoreboard calls predict_p_yes() directly.
+scikit-learn
+joblib

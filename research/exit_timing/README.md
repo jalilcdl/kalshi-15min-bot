@@ -1,0 +1,149 @@
+# Exit-timing validation — buy early, sell on a favorable move
+
+**This answers a genuinely different question from everything else in this
+project.** The strike-probability model and its walk-forward validation
+(`../strike_probability/`) answer "will this settle YES or NO." The user's
+actual intended strategy is different: **buy early in the window, wait for
+the contract's own price to move 20-40% in your favor, and sell before
+expiry** — a price-timing / scalp strategy, not a settlement bet. Nothing
+built before this answered that. This does, using real historical Kalshi
+contract prices (not a model-derived proxy).
+
+**Bottom line: hitting a 20-40% favorable move happens often and fast (69-86%
+of entries, in 2-6 minutes median) — but in aggregate dollar terms, simply
+holding every position to settlement outperformed every early-exit threshold
+tested, consistently, though not at full statistical significance. The exit
+logic is deployed anyway, at the best-performing point in the stated range
+(35%), because paper trading exists to test the strategy actually intended
+to be run — but go in knowing the honest backtest doesn't clearly favor it
+over just holding.**
+
+## 1. Data: real historical contract prices, not a proxy
+
+Kalshi's API exposes real per-minute price/bid/ask candlesticks for every
+market (`/series/{s}/markets/{t}/candlesticks`), confirmed to retain the
+full 45-day history this project already had settled-market data for.
+Pulled all 4,250 markets (`scripts/fetch_candlesticks.py`, rate-limited,
+resumable) — 67,897 1-min bars, 4,244 markets with usable data (6 came back
+empty). This is what makes the analysis below real rather than a
+model-implied approximation.
+
+## 2. Method
+
+**Entry:** replays the exact same rule `paper_trader.decide_trade()` uses —
+distance+time+volatility model, minimum-distance gate, minimum-edge gate —
+at checkpoint 1 (~60-120s into the window, same timing already established
+in `../strike_probability/README.md` §3b), using the REAL yes_ask/no_ask
+read off the candlestick at that minute (not the single settlement-time
+snapshot in `settled_markets.csv`, which only reflects price near/at close
+and is useless for this). 2,790 of 4,250 checkpoint-1 rows cleared the entry
+threshold.
+
+**Exit:** for every entered trade, scans the market's own remaining
+candlesticks for the first minute the position's **sellable value** (the
+bid on your side — you sell into the bid, not the ask; for NO, that's
+`1 - yes_ask`) reaches each threshold in {20, 25, 30, 35, 40}%. Reports both
+a **conservative** read (minute-close prices only) and an **optimistic**
+one (best price touched intra-minute, via the high/low — this requires
+watching every tick to actually capture, so treat it as an upper bound, not
+a promise). Money math (§4) uses the conservative read only.
+
+**METHODOLOGY CAVEAT — read this before trusting the numbers:** the entry
+model is `model/strike_prob_model.pkl`, fit on ALL 45 days of this same
+dataset (its settlement-prediction accuracy was already validated properly
+on a held-out walk-forward basis elsewhere — see
+`../strike_probability/README.md`). This analysis reuses that all-data model
+to decide entries, then examines real historical price paths afterward on
+the same 45 days. The price-path data itself was never used to fit
+anything, so there's no direct leakage — but this is a **historical replay**
+of what the live strategy would have done, not a fresh nested walk-forward
+test of entry+exit together. Flagged plainly, not hidden.
+
+## 3. Does the target actually get hit, and how fast?
+
+| Target | Hit rate (close) | Median time | Hit rate (optimistic) | Median time |
+|---|---|---|---|---|
+| +20% | 86.0% | 2.0 min | 90.6% | 2.0 min |
+| +25% | 82.5% | 3.0 min | 87.0% | 2.0 min |
+| +30% | 78.6% | 4.0 min | 83.3% | 3.0 min |
+| +35% | 74.8% | 5.0 min | 78.7% | 4.0 min |
+| +40% | 69.4% | 6.0 min | 73.2% | 4.0 min |
+
+n=2,790 entered trades. Mean/median max favorable excursion (even among
+trades that didn't hit a given target): 60.6% / 56.1%. Only 3.0% of entered
+trades never moved favorably at all. **On the narrow question "does the
+price move 20-40% in my favor before expiry" — yes, usually, and within a
+few minutes.** This part of the intended strategy is real.
+
+## 4. Does selling early actually make more money than holding?
+
+This is the number that matters, and it's the honest surprise: **no, not in
+this data.** Full round-trip P&L, real prices, **real double-sided fees**
+(a round-trip early exit pays Kalshi's taker fee on entry AND exit; holding
+to settlement only ever pays it once):
+
+| Strategy | Turnover | Net profit | ROI | "Win" rate |
+|---|---|---|---|---|
+| **Always hold to settlement** | $16,793.93 | **+$2,076.07** | **12.4%** | 67.6% |
+| Sell at +20% (else hold) | $16,793.93 | +$1,483.39 | 8.8% | 87.0% |
+| Sell at +25% (else hold) | $16,793.93 | +$1,598.39 | 9.5% | 84.7% |
+| Sell at +30% (else hold) | $16,793.93 | +$1,716.25 | 10.2% | 82.5% |
+| **Sell at +35% (else hold)** | $16,793.93 | +$1,825.81 | **10.9%** | 80.6% |
+| Sell at +40% (else hold) | $16,793.93 | +$1,802.64 | 10.7% | 78.3% |
+
+Every early-exit variant "wins" (exits for a gain or settles favorably) far
+more *often* than holding (78-87% vs. 67.6%) — but holding still comes out
+**ahead in total dollars**, and by a consistent margin across every
+threshold tested. 35% was the best of the tested early-exit points, still
+~1.5 percentage points of ROI behind just holding.
+
+**Why:** decomposed the trades that DID hit each target — of those, roughly
+**77-85% would have gone on to settle in the buyer's favor anyway** (the
+full $1.00 payout, not just the capped 20-40% gain — upside foregone by
+selling early), and only **15-23% would have reversed to a total loss**
+(the case where selling early genuinely saved the trade). The insurance
+value of locking in a small gain doesn't outweigh the much larger payouts
+given up on the majority of trades that were headed for a win regardless.
+
+**Statistical significance:** market-level bootstrap (2,000 resamples),
+hold vs. the best-performing scalp variant (+35%): profit gap -$250.26,
+**p=0.127**. The direction is consistent across every threshold and both a
+partial (n=404) and full (n=2,790) sample — but it does not clear the
+conventional p<0.05 bar. Read this as "hold looks better and the pattern is
+consistent, not as "definitively proven."
+
+## 5. What was actually deployed, and why
+
+`config.PAPER_TRADE_EXIT_TARGET = 0.35` — `paper_trader.py` now checks every
+pending position's real live bid each cycle and sells early if it's up 35%,
+else holds to settlement as before (`trade_log.py` tracks this distinctly:
+`exit_reason` = "target_hit" vs "settlement", with its own fee column since
+an early exit pays fees twice).
+
+**This was deployed despite §4's finding, on purpose.** The point of paper
+trading here is to test the strategy actually intended to be run for real,
+not the theoretical backtest optimum — and 35% is the best-supported point
+within the user's own stated 20-40% range. But go in with eyes open: the
+honest backtest says simply holding may do better in aggregate, even though
+selling early "works" (exits positively) much more often. Watch the live
+paper-trading numbers in the dashboard's Trade log page against this
+expectation as real data accumulates.
+
+## 6. Reproducing this
+
+```
+cd scripts
+python fetch_candlesticks.py ../data/candlesticks.csv   # resumable, ~25 min for the full history
+python exit_timing_backtest.py
+python pnl_comparison.py
+```
+
+## 7. Files
+
+```
+data/candlesticks.csv                Real 1-min price/bid/ask history, 4,244 markets
+scripts/fetch_candlesticks.py        Rate-limited, resumable candlestick fetcher
+scripts/exit_timing_backtest.py      Entry replay + hit-rate/time-to-target analysis
+scripts/pnl_comparison.py            Full round-trip P&L: sell-early vs. hold, real fees
+results/exit_timing_trades.csv       Every entered trade: entry, exit prices/times per threshold
+```

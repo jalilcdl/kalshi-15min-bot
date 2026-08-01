@@ -1,0 +1,317 @@
+// Kalshi 15-min BTC Intel — Pine Script port of the Python confluence bot.
+// Timeframe-independent: pulls 1-minute candles internally via
+// request.security_lower_tf and computes everything on its own rolling
+// 300-bar 1-min buffer (mirroring the bot's LOOKBACK_BARS = 300), so the
+// chart can be on any timeframe >= 1 minute. Use on COINBASE:BTCUSD.
+//
+// 7 indicators each vote +1 / -1 / 0; confidence = how many agree with the
+// majority. A 4-state classifier (UPTREND / DOWNTREND / RANGING / STABLE)
+// mirrors classifier.py. Alerts fire on state changes and high-confidence
+// directional states.
+//@version=6
+indicator("Kalshi 15m BTC Intel", overlay = true, max_labels_count = 50)
+
+// --- Inputs (defaults mirror config.py) --------------------------------------
+lookbackBars = input.int(300, "1-min lookback bars", minval = 100, group = "Data")
+
+emaFastLen   = input.int(27,    "EMA fast (1-min bars)",  group = "EMA cross")
+emaSlowLen   = input.int(63,    "EMA slow (1-min bars)",  group = "EMA cross")
+emaMinSepPct = input.float(0.02, "EMA min separation %",  group = "EMA cross", step = 0.005)
+
+rsiPeriod = input.int(14,     "RSI period (3-min resample)", group = "RSI")
+rsiBull   = input.float(55.0, "RSI bullish level",           group = "RSI")
+rsiBear   = input.float(45.0, "RSI bearish level",           group = "RSI")
+
+volSurgeRatio  = input.float(1.5, "Volume surge ratio",         group = "Volume")
+volBaselineBlk = input.int(16,    "Baseline blocks (x window)", group = "Volume")
+
+windowMin         = input.int(15,     "Kalshi window (minutes)",  group = "Window")
+windowDeadbandPct = input.float(0.05, "Window delta deadband %",  group = "Window", step = 0.01)
+
+momSpan        = input.int(9,       "Momentum EMA span",       group = "Momentum")
+momDeadbandPct = input.float(0.01,  "Momentum deadband %/min", group = "Momentum", step = 0.005)
+accelLag       = input.int(5,       "Acceleration lag (bars)", group = "Momentum")
+accelDeadband  = input.float(0.005, "Acceleration deadband",   group = "Momentum", step = 0.001)
+
+tickTrendBars = input.int(5, "Tick-trend bars", group = "Tick trend")
+
+volHighPct     = input.float(0.08, "Volatility High %",     group = "Classifier", step = 0.01)
+volModeratePct = input.float(0.04, "Volatility Moderate %", group = "Classifier", step = 0.01)
+trendStrongPct = input.float(0.15, "Trend Strong %",        group = "Classifier", step = 0.01)
+trendWeakPct   = input.float(0.05, "Trend Weak %",          group = "Classifier", step = 0.01)
+confHigh       = input.int(6, "Confidence high (of 7)",     group = "Classifier")
+confModerate   = input.int(4, "Confidence moderate (of 7)", group = "Classifier")
+
+showTable   = input.bool(true, "Show panel",                                group = "Panel")
+panelPos    = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right"], group = "Panel")
+panelSize   = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = "Panel")
+panelTheme  = input.string("Dark", "Theme", options = ["Dark", "Light"],    group = "Panel")
+compactMode = input.bool(false, "Compact mode (hide vote rows)",            group = "Panel")
+
+showEmas  = input.bool(true, "Plot EMAs",                       group = "Chart")
+glowEmas  = input.bool(true, "EMA glow effect",                 group = "Chart")
+showFill  = input.bool(true, "Trend cloud between EMAs",        group = "Chart")
+colorBars = input.bool(true, "Color candles by confluence",     group = "Chart")
+showBg    = input.bool(true, "Background tint by state",        group = "Chart")
+tintRanging = input.bool(false, "Tint RANGING too (yellow)",    group = "Chart")
+bgTransp  = input.int(94, "Tint transparency", minval = 80, maxval = 99, group = "Chart")
+
+sigStyle = input.string("Labels", "Signal style", options = ["Labels", "Triangles"], group = "Signals")
+
+if timeframe.in_seconds() < 60
+    runtime.error("Chart timeframe must be 1 minute or higher (the script requests 1-min data internally).")
+
+// --- Rolling 1-min buffer (oldest first, like the bot's candle list) -----------
+c1 = request.security_lower_tf(syminfo.tickerid, "1", close)
+v1 = request.security_lower_tf(syminfo.tickerid, "1", volume)
+
+var array<float> closes = array.new_float()
+var array<float> vols   = array.new_float()
+
+// Rollback on realtime ticks resets the arrays to their last committed state,
+// so appending the current bar's intrabars every execution does not duplicate.
+if array.size(c1) > 0
+    for i = 0 to array.size(c1) - 1
+        closes.push(array.get(c1, i))
+        vols.push(array.get(v1, i))
+while closes.size() > lookbackBars
+    closes.shift()
+    vols.shift()
+
+int n = closes.size()
+bool ready = n >= lookbackBars
+
+// --- Helpers (array-based, mirroring indicators.py exactly) --------------------
+signDeadband(float v, float db) =>
+    v > db ? 1 : v < -db ? -1 : 0
+
+// EMA seeded with the first value, like the bot's ema() (not SMA-seeded ta.ema).
+emaArray(array<float> src, int span) =>
+    out = array.new_float()
+    if src.size() > 0
+        float k = 2.0 / (span + 1.0)
+        out.push(src.get(0))
+        if src.size() > 1
+            for i = 1 to src.size() - 1
+                out.push(src.get(i) * k + out.get(i - 1) * (1.0 - k))
+    out
+
+// Wilder RSI on every-3rd-close anchored to the newest bar, over the full
+// buffer — matches _rsi(closes[::-1][::3][::-1], period) in the Python.
+stridedRsi(array<float> src, int period, int stride) =>
+    float result = na
+    int m = src.size()
+    if m > 0
+        s = array.new_float()
+        for i = (m - 1) % stride to m - 1 by stride
+            s.push(src.get(i))
+        int sn = s.size()
+        if sn >= period + 1
+            float avgGain = 0.0
+            float avgLoss = 0.0
+            for j = 1 to sn - 1
+                d = s.get(j) - s.get(j - 1)
+                g = math.max(d, 0.0)
+                l = math.max(-d, 0.0)
+                if j <= period
+                    avgGain += g / period
+                    avgLoss += l / period
+                else
+                    avgGain := (avgGain * (period - 1) + g) / period
+                    avgLoss := (avgLoss * (period - 1) + l) / period
+            result := avgLoss == 0 ? 100.0 : 100.0 - 100.0 / (1.0 + avgGain / avgLoss)
+    result
+
+// --- Compute the 7 votes over the 1-min buffer ---------------------------------
+float emaFastV = na
+float emaSlowV = na
+float sepPct = na, float rsiVal = na, float volRatio = na
+float deltaPct = 0.0, float mom = na, float accel = 0.0, float realizedVol = 0.0
+int voteEma = 0, int voteRsi = 0, int voteVol = 0, int voteDelta = 0
+int voteMom = 0, int voteAccel = 0, int voteTick = 0, int netTicks = 0
+
+if ready
+    // 1. EMA fast/slow cross
+    emaFastV := emaArray(closes, emaFastLen).last()
+    emaSlowV := emaArray(closes, emaSlowLen).last()
+    sepPct := (emaFastV - emaSlowV) / emaSlowV * 100.0
+    voteEma := signDeadband(sepPct, emaMinSepPct)
+
+    // 2. RSI on 3-min strided resample
+    rsiVal := stridedRsi(closes, rsiPeriod, 3)
+    voteRsi := na(rsiVal) ? 0 : rsiVal >= rsiBull ? 1 : rsiVal <= rsiBear ? -1 : 0
+
+    // 3. Volume surge vs baseline blocks (direction from concurrent price move)
+    int w = windowMin
+    float volNow = 0.0
+    for i = n - w to n - 1
+        volNow += vols.get(i)
+    float blockSum = 0.0
+    int blockCount = 0
+    for b = 0 to volBaselineBlk - 1
+        int segStart = n - (b + 2) * w
+        if segStart >= 0
+            float s = 0.0
+            for i = segStart to segStart + w - 1
+                s += vols.get(i)
+            blockSum += s
+            blockCount += 1
+    float baseline = blockCount > 0 ? blockSum / blockCount : 0.0
+    deltaPct := n > w ? (closes.last() - closes.get(n - w)) / closes.get(n - w) * 100.0 : 0.0
+    volRatio := baseline > 0 ? volNow / baseline : 0.0
+    voteVol := baseline > 0 and volRatio >= volSurgeRatio ? signDeadband(deltaPct, 0.0) : 0
+
+    // 4. Window delta over the Kalshi horizon
+    voteDelta := signDeadband(deltaPct, windowDeadbandPct)
+
+    // 5 & 6. Micro momentum (EMA of 1-min returns) + acceleration
+    rets = array.new_float()
+    for i = 1 to n - 1
+        rets.push((closes.get(i) - closes.get(i - 1)) / closes.get(i - 1) * 100.0)
+    momArr = emaArray(rets, momSpan)
+    mom := momArr.last()
+    voteMom := signDeadband(mom, momDeadbandPct)
+    accel := momArr.size() > accelLag ? mom - momArr.get(momArr.size() - 1 - accelLag) : 0.0
+    voteAccel := signDeadband(accel, accelDeadband)
+
+    // 7. Tick trend: net direction of last N 1-min closes
+    for i = n - tickTrendBars to n - 1
+        netTicks += closes.get(i) > closes.get(i - 1) ? 1 : closes.get(i) < closes.get(i - 1) ? -1 : 0
+    voteTick := netTicks >= 2 ? 1 : netTicks <= -2 ? -1 : 0
+
+    // Realized vol: population stdev of last w 1-min returns (pstdev)
+    if rets.size() >= w
+        float mean = 0.0
+        for i = rets.size() - w to rets.size() - 1
+            mean += rets.get(i) / w
+        float ssq = 0.0
+        for i = rets.size() - w to rets.size() - 1
+            ssq += math.pow(rets.get(i) - mean, 2)
+        realizedVol := math.sqrt(ssq / w)
+
+// --- Confluence -----------------------------------------------------------------
+bullCount = (voteEma > 0 ? 1 : 0) + (voteRsi > 0 ? 1 : 0) + (voteVol > 0 ? 1 : 0) + (voteDelta > 0 ? 1 : 0) + (voteMom > 0 ? 1 : 0) + (voteAccel > 0 ? 1 : 0) + (voteTick > 0 ? 1 : 0)
+bearCount = (voteEma < 0 ? 1 : 0) + (voteRsi < 0 ? 1 : 0) + (voteVol < 0 ? 1 : 0) + (voteDelta < 0 ? 1 : 0) + (voteMom < 0 ? 1 : 0) + (voteAccel < 0 ? 1 : 0) + (voteTick < 0 ? 1 : 0)
+direction  = bullCount > bearCount ? 1 : bearCount > bullCount ? -1 : 0
+confidence = bullCount > bearCount ? bullCount : bearCount > bullCount ? bearCount : bullCount
+
+// --- Classifier (mirrors classifier.py) -------------------------------------------
+volatilityLbl = realizedVol >= volHighPct ? "High" : realizedVol >= volModeratePct ? "Moderate" : "Low"
+
+emaAligned = not na(sepPct) and sepPct * deltaPct > 0
+absMove    = math.abs(deltaPct)
+trendLbl   = absMove >= trendStrongPct and emaAligned ? "Strong" : absMove >= trendWeakPct ? "Weak" : "Unclear"
+
+momBull = (voteRsi > 0 ? 1 : 0) + (voteMom > 0 ? 1 : 0) + (voteAccel > 0 ? 1 : 0) + (voteTick > 0 ? 1 : 0)
+momBear = (voteRsi < 0 ? 1 : 0) + (voteMom < 0 ? 1 : 0) + (voteAccel < 0 ? 1 : 0) + (voteTick < 0 ? 1 : 0)
+momentumLbl = momBull > 0 and momBear == 0 ? "Bullish" : momBear > 0 and momBull == 0 ? "Bearish" : momBull == 0 and momBear == 0 ? "Neutral" : "Mixed"
+
+confBand = confidence >= confHigh ? "high" : confidence >= confModerate ? "moderate" : "low"
+
+string state = "WARMUP"
+if ready
+    state := "RANGING"
+    if trendLbl == "Strong" and momentumLbl == "Bullish" and direction > 0
+        state := "UPTREND"
+    else if trendLbl == "Strong" and momentumLbl == "Bearish" and direction < 0
+        state := "DOWNTREND"
+    else if volatilityLbl == "Low" and momentumLbl == "Neutral" and trendLbl != "Strong"
+        state := "STABLE"
+
+// --- Palette (TradingView-native colors; dark/light aware) --------------------------
+COL_UP     = #089981
+COL_DOWN   = #F23645
+COL_RANGE  = #F5A623
+COL_STABLE = #2962FF
+
+bool isDark  = panelTheme == "Dark"
+colPanelBg   = isDark ? #131722 : #FFFFFF
+colRowBg     = isDark ? #1E222D : #F0F3FA
+colText      = isDark ? #D1D4DC : #131722
+colMuted     = #787B86
+
+stateColor = state == "UPTREND" ? COL_UP : state == "DOWNTREND" ? COL_DOWN : state == "STABLE" ? COL_STABLE : state == "RANGING" ? COL_RANGE : colMuted
+
+// --- Display -----------------------------------------------------------------------
+// EMAs with a glow effect: each line is drawn three times at widening
+// linewidths and rising transparency, colored by which side of the cross we're on.
+emaTrendCol = emaFastV > emaSlowV ? COL_UP : COL_DOWN
+
+plot(showEmas and glowEmas ? emaFastV : na, "EMA fast glow outer", color = color.new(emaTrendCol, 88), linewidth = 6)
+plot(showEmas and glowEmas ? emaFastV : na, "EMA fast glow inner", color = color.new(emaTrendCol, 70), linewidth = 3)
+pFast = plot(showEmas ? emaFastV : na, "EMA fast (1m)", color = color.new(emaTrendCol, 0), linewidth = 1)
+
+plot(showEmas and glowEmas ? emaSlowV : na, "EMA slow glow outer", color = color.new(#787B86, 90), linewidth = 5)
+pSlow = plot(showEmas ? emaSlowV : na, "EMA slow (1m)", color = color.new(#787B86, 30), linewidth = 1)
+
+// Trend cloud: deepens as the EMA separation (trend strength) grows.
+cloudTransp = int(math.min(92.0, math.max(70.0, 92.0 - math.abs(nz(sepPct)) * 150.0)))
+fill(pFast, pSlow, color = showEmas and showFill ? color.new(emaTrendCol, cloudTransp) : na, title = "Trend cloud")
+
+// Candle coloring: gradient from muted gray (0 net votes) to full trend
+// color (7/7 confluence). The chart itself becomes the confidence meter.
+netScore = bullCount - bearCount
+barCol = netScore > 0 ? color.from_gradient(netScore, 0, 7, #787B86, COL_UP) : netScore < 0 ? color.from_gradient(-netScore, 0, 7, #787B86, COL_DOWN) : #787B86
+barcolor(colorBars and ready ? barCol : na, title = "Confluence candles")
+
+bgcolor(showBg and ready and (state != "RANGING" or tintRanging) ? color.new(stateColor, bgTransp) : na)
+
+voteTxt(int v) =>
+    v > 0 ? "▲" : v < 0 ? "▼" : "–"
+voteColor(int v) =>
+    v > 0 ? COL_UP : v < 0 ? COL_DOWN : colMuted
+
+panelPosition = panelPos == "Top left" ? position.top_left : panelPos == "Bottom right" ? position.bottom_right : panelPos == "Bottom left" ? position.bottom_left : panelPos == "Middle right" ? position.middle_right : position.top_right
+txtSize = panelSize == "Tiny" ? size.tiny : panelSize == "Normal" ? size.normal : size.small
+
+var table t = table.new(panelPosition, 2, 14, bgcolor = colPanelBg, frame_width = 1, frame_color = colRowBg, border_width = 2, border_color = colPanelBg)
+
+// Two-column row: muted label on the left, value on the right.
+prow(int r, string k, string v, color vcol) =>
+    table.cell(t, 0, r, k, text_color = colMuted, text_halign = text.align_left,  text_size = txtSize, bgcolor = colRowBg)
+    table.cell(t, 1, r, v, text_color = vcol,     text_halign = text.align_right, text_size = txtSize, bgcolor = colRowBg)
+
+if showTable and barstate.islast
+    table.clear(t, 0, 0, 1, 13)
+    stateTxt = state == "UPTREND" ? "▲ UPTREND" : state == "DOWNTREND" ? "▼ DOWNTREND" : state == "STABLE" ? "● STABLE" : state == "RANGING" ? "◆ RANGING" : "· WARMUP"
+    table.cell(t, 0, 0, "KALSHI 15M", text_color = colText, text_halign = text.align_left, text_size = txtSize, bgcolor = colPanelBg)
+    table.cell(t, 1, 0, stateTxt, text_color = color.white, text_halign = text.align_center, text_size = txtSize, bgcolor = stateColor)
+    if not ready
+        prow(1, "Warming up", str.tostring(n) + " / " + str.tostring(lookbackBars) + " bars", colText)
+    else
+        confDots = ""
+        for i = 1 to 7
+            confDots += i <= confidence ? "●" : "○"
+        confCol = direction > 0 ? COL_UP : direction < 0 ? COL_DOWN : colMuted
+        prow(1, "Confidence", confDots + "  " + str.tostring(confidence) + "/7", confCol)
+        prow(2, "Trend",      trendLbl,      trendLbl == "Strong" ? colText : colMuted)
+        prow(3, "Momentum",   momentumLbl,   momentumLbl == "Bullish" ? COL_UP : momentumLbl == "Bearish" ? COL_DOWN : colMuted)
+        prow(4, "Volatility", volatilityLbl, volatilityLbl == "High" ? COL_RANGE : volatilityLbl == "Moderate" ? colText : colMuted)
+        prow(5, "15m move",   str.tostring(deltaPct, "+0.00") + "%", deltaPct > 0 ? COL_UP : deltaPct < 0 ? COL_DOWN : colMuted)
+        prow(6, "Realized vol", str.tostring(realizedVol, "0.000") + "%", colMuted)
+        if not compactMode
+            prow(7,  "EMA " + str.tostring(emaFastLen) + "/" + str.tostring(emaSlowLen), voteTxt(voteEma) + "  " + str.tostring(sepPct, "+0.000") + "%", voteColor(voteEma))
+            prow(8,  "RSI (14, 3m)", voteTxt(voteRsi) + "  " + (na(rsiVal) ? "n/a" : str.tostring(rsiVal, "0.0")), voteColor(voteRsi))
+            prow(9,  "Volume",       voteTxt(voteVol) + "  ×" + str.tostring(volRatio, "0.00"), voteColor(voteVol))
+            prow(10, "Window Δ",     voteTxt(voteDelta), voteColor(voteDelta))
+            prow(11, "Micro mom.",   voteTxt(voteMom) + "  " + str.tostring(mom, "+0.000"), voteColor(voteMom))
+            prow(12, "Accel",        voteTxt(voteAccel) + "  " + str.tostring(accel, "+0.000"), voteColor(voteAccel))
+            prow(13, "Tick trend",   voteTxt(voteTick) + "  " + str.tostring(netTicks, "+0"), voteColor(voteTick))
+
+// State-change markers on the chart (ignore the initial WARMUP -> first state flip)
+stateChanged = ready and state != state[1] and state[1] != "WARMUP"
+useLabels = sigStyle == "Labels"
+plotshape(stateChanged and state == "UPTREND" and useLabels,       "Buy signal",      shape.labelup,      location.belowbar, COL_UP,   text = "BUY",  textcolor = color.white, size = size.small)
+plotshape(stateChanged and state == "DOWNTREND" and useLabels,     "Sell signal",     shape.labeldown,    location.abovebar, COL_DOWN, text = "SELL", textcolor = color.white, size = size.small)
+plotshape(stateChanged and state == "UPTREND" and not useLabels,   "Uptrend start",   shape.triangleup,   location.belowbar, COL_UP,   size = size.small)
+plotshape(stateChanged and state == "DOWNTREND" and not useLabels, "Downtrend start", shape.triangledown, location.abovebar, COL_DOWN, size = size.small)
+
+// --- Alerts (mirror the bot's push triggers) ------------------------------------------
+// Dynamic message with the actual transition, e.g. "RANGING → UPTREND (5/7)".
+// To use it, create an alert with condition "Any alert() function call".
+if stateChanged
+    alert("Kalshi 15m: " + state[1] + " → " + state + " (" + str.tostring(confidence) + "/7, " + str.tostring(deltaPct, "+0.00") + "% 15m move)", alert.freq_once_per_bar)
+
+alertcondition(stateChanged, "State change", "Kalshi 15m: market state changed")
+alertcondition(ready and state == "UPTREND" and confidence >= confHigh,   "High-confidence UPTREND",   "Kalshi 15m: UPTREND, confidence >= 6/7")
+alertcondition(ready and state == "DOWNTREND" and confidence >= confHigh, "High-confidence DOWNTREND", "Kalshi 15m: DOWNTREND, confidence >= 6/7")

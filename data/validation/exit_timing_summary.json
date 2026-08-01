@@ -1,0 +1,22 @@
+{
+  "as_of": "2026-08-01",
+  "data": {"n_entered_trades": 2790, "n_markets_with_candles": 4244, "date_range": "2026-06-17 to 2026-08-01"},
+  "hit_rates_conservative": {
+    "20": {"hit_rate": 0.860, "median_minutes": 2.0},
+    "25": {"hit_rate": 0.825, "median_minutes": 3.0},
+    "30": {"hit_rate": 0.786, "median_minutes": 4.0},
+    "35": {"hit_rate": 0.748, "median_minutes": 5.0},
+    "40": {"hit_rate": 0.694, "median_minutes": 6.0}
+  },
+  "pnl_comparison": {
+    "hold_to_settlement": {"turnover": 16793.93, "net_profit": 2076.07, "roi": 0.124, "win_rate": 0.676},
+    "sell_20": {"net_profit": 1483.39, "roi": 0.088, "win_rate": 0.870},
+    "sell_25": {"net_profit": 1598.39, "roi": 0.095, "win_rate": 0.847},
+    "sell_30": {"net_profit": 1716.25, "roi": 0.102, "win_rate": 0.825},
+    "sell_35": {"net_profit": 1825.81, "roi": 0.109, "win_rate": 0.806},
+    "sell_40": {"net_profit": 1802.64, "roi": 0.107, "win_rate": 0.783}
+  },
+  "hold_vs_best_scalp_significance": {"threshold": 35, "profit_gap": -250.26, "bootstrap_p": 0.127, "significant": false},
+  "deployed_target": 0.35,
+  "conclusion": "Hitting a 20-40% favorable move happens often (69-86%) and fast (2-6 min median) using real historical Kalshi contract prices. But holding to settlement outperformed every early-exit threshold tested in aggregate ROI (12.4% vs 8.8-10.9%), consistently across all thresholds and both a partial and full sample, though not at full statistical significance (p=0.127 for the best variant). Of trades that hit a target early, 77-85% would have settled in the buyer's favor anyway (upside foregone); only 15-23% would have reversed to a loss (genuinely saved by exiting early). Deployed at 35% in paper_trader.py anyway since paper trading is meant to test the intended strategy, not the backtest optimum."
+}

@@ -1,0 +1,27 @@
+{
+  "fitted_at": "2026-08-01T13:36:27.397402+00:00",
+  "features": [
+    "distance_pct",
+    "minutes_remaining",
+    "realized_vol",
+    "dist_over_reachable",
+    "current_side_leading"
+  ],
+  "n_training_rows": 55245,
+  "n_training_markets": 4250,
+  "training_date_range": [
+    "2026-06-17 12:45:00+00:00",
+    "2026-08-01 12:30:00+00:00"
+  ],
+  "in_sample_brier": 0.14743924530296074,
+  "in_sample_log_loss": 0.4572459806070463,
+  "coefficients": {
+    "distance_pct": 12.761319889031647,
+    "minutes_remaining": -0.014258360202110078,
+    "realized_vol": -0.31103705635218176,
+    "dist_over_reachable": -0.1997715944326974,
+    "current_side_leading": 0.8865954141498806
+  },
+  "intercept": 0.07739780575361659,
+  "validation_note": "In-sample metrics above are NOT the validation result -- they will look better than reality because the model is scored on data it was fit on. The real, honest, out-of-fold numbers are in research/strike_probability/README.md (walk-forward Brier ~0.150 vs. naive baseline ~0.160, market-level bootstrap p<0.0001)."
+}

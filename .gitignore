@@ -1,0 +1,58 @@
+# Virtual environment -- must never be committed. Streamlit Cloud builds its
+# own environment from requirements.txt. None currently exists in this repo,
+# but excluded defensively in case one gets created locally later.
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets -- TELEGRAM_BOT_TOKEN/CHAT_ID and (optionally) KALSHI_DASHBOARD_PASSWORD
+# are read from env vars / .env locally, or Streamlit Cloud's Secrets panel in
+# production (see .streamlit/secrets.toml.example). Never commit the real values.
+.env
+.streamlit/secrets.toml
+
+# Logs -- regenerable, and paper_trader.log / bot.log grow unbounded.
+*.log
+
+# --- Data: read this before changing ---
+# model/strike_prob_model.pkl and its metadata ARE committed on purpose --
+# unlike a shelved/unused experiment, this is the ACTIVE fitted model
+# (model/strike_probability.py) that dashboard/app.py calls directly for the
+# live Scoreboard "Model read" card, and that paper_trader.py uses for real
+# entry decisions. It's ~4KB (a 5-coefficient logistic regression). Excluding
+# it would silently break the deployed dashboard.
+#
+# data/validation/*.json ARE committed on purpose too -- tiny, self-contained
+# summaries the Model performance page reads directly.
+#
+# Personal trading record -- keep OUT of the repo, same as the sports models'
+# bet_log.csv. paper_trader.py runs locally only (Windows Scheduled Task); a
+# committed snapshot would just go stale the moment Cloud can't write back to
+# it, and it's the user's actual (paper, so far) trading history either way.
+data/trade_log.csv
+
+# Bulk historical research data (Coinbase 1-min bars, Kalshi settled markets
+# and candlesticks, feature tables, walk-forward predictions) -- large
+# (~33MB total), fully regenerable via the scripts in each research/*/scripts/
+# folder (see each folder's own README for the exact commands), and not
+# needed by the deployed dashboard at all. The scripts and READMEs themselves
+# ARE committed -- they're the actual documentation of how these numbers
+# were produced.
+research/*/data/
+research/*/results/
+
+# Local Claude Code dev-machine settings (permission allowlist etc.) --
+# machine-specific, not shared config. .claude/launch.json (the dashboard
+# run config, no secrets) is committed on purpose.
+.claude/settings.local.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

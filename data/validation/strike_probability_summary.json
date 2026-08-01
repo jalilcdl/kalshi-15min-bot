@@ -1,0 +1,22 @@
+{
+  "as_of": "2026-08-01",
+  "data": {"n_settled_markets": 4250, "n_checkpoint_rows": 55245, "date_range": "2026-06-17 to 2026-08-01"},
+  "walk_forward_pooled": {
+    "n_rows": 38674, "n_markets": 2975, "n_folds": 6,
+    "brier": {"A_base_rate": 0.2502, "B_current_side_holds": 0.1600, "C_distance_time_vol": 0.1500, "D_full_model": 0.1495},
+    "log_loss": {"A_base_rate": 0.6935, "B_current_side_holds": 0.4921, "C_distance_time_vol": 0.4631, "D_full_model": 0.4610}
+  },
+  "bootstrap_vs_full_model": {
+    "D_vs_A": {"brier_gap": -0.1006, "p_value": 0.0001, "significant": true},
+    "D_vs_B": {"brier_gap": -0.0105, "p_value": 0.0001, "significant": true},
+    "D_vs_C": {"brier_gap": -0.0005, "p_value": 0.054, "significant": false}
+  },
+  "vs_shipped_heuristic": {
+    "heuristic_call_rate": 0.263, "heuristic_accuracy_on_calls": 0.948,
+    "heuristic_abstain_rate": 0.737,
+    "accuracy_on_heuristic_abstained_rows": {
+      "current_side_holds": 0.725, "distance_time_vol": 0.726, "full_model": 0.727
+    }
+  },
+  "conclusion": "Distance+time+volatility framing (model C) shows a real, significant, walk-forward-validated improvement over the naive current-side-holds baseline, consistent across all 6 folds. The 7-indicator confluence engine (model D) adds no significant improvement over C (p=0.054, loses to C in 2/6 folds). The shipped strike_distance.py heuristic is accurate (94.8%) but abstains on 73.7% of cases; the fitted model gives usable ~73% accuracy on exactly those abstained cases. NOT yet validated against real trading fees/spread -- accuracy is not the same as profitability."
+}

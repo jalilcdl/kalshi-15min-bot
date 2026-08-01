@@ -1,0 +1,5 @@
+# Dark theme, committed so the dashboard is dark by default for every viewer —
+# same pattern as the mlb-model / cfb-model / nfl-model dashboards, so all of
+# them read consistently. base="dark" is Streamlit's built-in dark palette.
+[theme]
+base = "dark"

@@ -1,0 +1,302 @@
+{
+  "FULL_SYSTEM_buy (UPTREND state entry)": {
+    "h5": {
+      "n": 2228,
+      "mean_ret": -0.005367588309016854,
+      "directional_win_rate": 0.43132854578096946,
+      "p_binom_vs_coinflip": 9.700341595706993e-11,
+      "market_mean": -0.0009805436875636277,
+      "market_win_rate": 0.49512623006053,
+      "excess_directional_return": -0.004387044621453226,
+      "t_stat": -1.6221532559655933,
+      "p_ttest": 0.10491208563801736,
+      "boot_p": 0.9366
+    },
+    "h15": {
+      "n": 2228,
+      "mean_ret": -0.0011525185595090922,
+      "directional_win_rate": 0.45466786355475763,
+      "p_binom_vs_coinflip": 2.034608804282471e-05,
+      "market_mean": -0.0029406441745390478,
+      "market_win_rate": 0.4908962039436227,
+      "excess_directional_return": 0.0017881256150299556,
+      "t_stat": -0.21684412512885667,
+      "p_ttest": 0.8283496853121818,
+      "boot_p": 0.3572
+    },
+    "h30": {
+      "n": 2228,
+      "mean_ret": -0.0020687190403849936,
+      "directional_win_rate": 0.4663375224416517,
+      "p_binom_vs_coinflip": 0.0015900470037474622,
+      "market_mean": -0.005860138164218534,
+      "market_win_rate": 0.4914350130159911,
+      "excess_directional_return": 0.00379141912383354,
+      "t_stat": -0.26366262060414947,
+      "p_ttest": 0.7920642945355553,
+      "boot_p": 0.2896
+    },
+    "h60": {
+      "n": 2228,
+      "mean_ret": -0.02490244227224173,
+      "directional_win_rate": 0.4533213644524237,
+      "p_binom_vs_coinflip": 1.1416889716712457e-05,
+      "market_mean": -0.011628106537134848,
+      "market_win_rate": 0.489397567950894,
+      "excess_directional_return": -0.013274335735106882,
+      "t_stat": -2.3632250888839756,
+      "p_ttest": 0.018202132697520194,
+      "boot_p": 0.9186
+    }
+  },
+  "FULL_SYSTEM_sell (DOWNTREND state entry)": {
+    "h5": {
+      "n": 2537,
+      "mean_ret": 0.0006522241536407554,
+      "directional_win_rate": 0.4828537642885298,
+      "p_binom_vs_coinflip": 0.08772563013063482,
+      "market_mean": -0.0009805436875636277,
+      "market_win_rate": 0.5042696315917884,
+      "excess_directional_return": -0.001632767841204383,
+      "t_stat": -0.1886087351786625,
+      "p_ttest": 0.850414577320555,
+      "boot_p": 0.7224
+    },
+    "h15": {
+      "n": 2537,
+      "mean_ret": -0.0001110179240940976,
+      "directional_win_rate": 0.4773354355538037,
+      "p_binom_vs_coinflip": 0.023597516049731003,
+      "market_mean": -0.0029406441745390478,
+      "market_win_rate": 0.5087203560182657,
+      "excess_directional_return": -0.0028296262504449504,
+      "t_stat": 0.019321280571613447,
+      "p_ttest": 0.984586327594979,
+      "boot_p": 0.7294
+    },
+    "h30": {
+      "n": 2537,
+      "mean_ret": 0.0008939634114735206,
+      "directional_win_rate": 0.4832479306267245,
+      "p_binom_vs_coinflip": 0.09535505756467365,
+      "market_mean": -0.005860138164218534,
+      "market_win_rate": 0.5084255299367795,
+      "excess_directional_return": -0.006754101575692054,
+      "t_stat": -0.11037318057074458,
+      "p_ttest": 0.9121221554167989,
+      "boot_p": 0.8558
+    },
+    "h60": {
+      "n": 2537,
+      "mean_ret": -0.0032390487993898577,
+      "directional_win_rate": 0.49389042175798187,
+      "p_binom_vs_coinflip": 0.5514451167976534,
+      "market_mean": -0.011628106537134848,
+      "market_win_rate": 0.5105094282592015,
+      "excess_directional_return": -0.00838905773774499,
+      "t_stat": 0.2975064438090234,
+      "p_ttest": 0.7661042569833443,
+      "boot_p": 0.827
+    }
+  },
+  "SIMPLE_EMA_cross_up": {
+    "h5": {
+      "n": 667,
+      "mean_ret": -0.007168261540571269,
+      "directional_win_rate": 0.4542728635682159,
+      "p_binom_vs_coinflip": 0.020099300056836075,
+      "market_mean": -0.0009805436875636277,
+      "market_win_rate": 0.49512623006053,
+      "excess_directional_return": -0.006187717853007641,
+      "t_stat": -1.4521970761849141,
+      "p_ttest": 0.14691774231334984,
+      "boot_p": 0.8776
+    },
+    "h15": {
+      "n": 667,
+      "mean_ret": -0.0062715805931556024,
+      "directional_win_rate": 0.46476761619190404,
+      "p_binom_vs_coinflip": 0.07481268602381243,
+      "market_mean": -0.0029406441745390478,
+      "market_win_rate": 0.4908962039436227,
+      "excess_directional_return": -0.0033309364186165547,
+      "t_stat": -0.7064402217863301,
+      "p_ttest": 0.4801614772674736,
+      "boot_p": 0.6468
+    },
+    "h30": {
+      "n": 667,
+      "mean_ret": -0.002476169010574043,
+      "directional_win_rate": 0.4917541229385307,
+      "p_binom_vs_coinflip": 0.6986375254963407,
+      "market_mean": -0.005860138164218534,
+      "market_win_rate": 0.4914350130159911,
+      "excess_directional_return": 0.003383969153644491,
+      "t_stat": -0.20077201224497496,
+      "p_ttest": 0.8409381446148143,
+      "boot_p": 0.4116
+    },
+    "h60": {
+      "n": 667,
+      "mean_ret": -0.026696481022993435,
+      "directional_win_rate": 0.4827586206896552,
+      "p_binom_vs_coinflip": 0.39431734704579124,
+      "market_mean": -0.011628106537134848,
+      "market_win_rate": 0.489397567950894,
+      "excess_directional_return": -0.015068374485858587,
+      "t_stat": -1.5046292679712148,
+      "p_ttest": 0.1328934883356489,
+      "boot_p": 0.8024
+    }
+  },
+  "SIMPLE_EMA_cross_down": {
+    "h5": {
+      "n": 668,
+      "mean_ret": -0.007849141284364012,
+      "directional_win_rate": 0.5164670658682635,
+      "p_binom_vs_coinflip": 0.41651641102703313,
+      "market_mean": -0.0009805436875636277,
+      "market_win_rate": 0.5042696315917884,
+      "excess_directional_return": 0.006868597596800384,
+      "t_stat": 1.580994308430673,
+      "p_ttest": 0.11435339627933418,
+      "boot_p": 0.0938
+    },
+    "h15": {
+      "n": 668,
+      "mean_ret": -0.011228290668419415,
+      "directional_win_rate": 0.4940119760479042,
+      "p_binom_vs_coinflip": 0.7865396682152718,
+      "market_mean": -0.0029406441745390478,
+      "market_win_rate": 0.5087203560182657,
+      "excess_directional_return": 0.008287646493880368,
+      "t_stat": 1.3749344623783808,
+      "p_ttest": 0.16961343690682995,
+      "boot_p": 0.179
+    },
+    "h30": {
+      "n": 668,
+      "mean_ret": -0.012073559960872487,
+      "directional_win_rate": 0.5119760479041916,
+      "p_binom_vs_coinflip": 0.5616993474310269,
+      "market_mean": -0.005860138164218534,
+      "market_win_rate": 0.5084255299367795,
+      "excess_directional_return": 0.006213421796653953,
+      "t_stat": 0.988855396732747,
+      "p_ttest": 0.32309247204262664,
+      "boot_p": 0.3216
+    },
+    "h60": {
+      "n": 667,
+      "mean_ret": -0.04119470811960857,
+      "directional_win_rate": 0.5367316341829086,
+      "p_binom_vs_coinflip": 0.06300757610395867,
+      "market_mean": -0.011628106537134848,
+      "market_win_rate": 0.5105094282592015,
+      "excess_directional_return": 0.02956660158247372,
+      "t_stat": 2.3049928979438876,
+      "p_ttest": 0.021473564776167103,
+      "boot_p": 0.0466
+    }
+  },
+  "HIGHCONF_buy (buy_signal AND confidence>=6/7)": {
+    "h5": {
+      "n": 716,
+      "mean_ret": -0.012879106946010474,
+      "directional_win_rate": 0.4022346368715084,
+      "p_binom_vs_coinflip": 1.882287653412577e-07,
+      "market_mean": -0.0009805436875636277,
+      "market_win_rate": 0.49512623006053,
+      "excess_directional_return": -0.011898563258446846,
+      "t_stat": -1.9836408273226707,
+      "p_ttest": 0.047677957778999365,
+      "boot_p": 0.9908
+    },
+    "h15": {
+      "n": 716,
+      "mean_ret": 0.004196197058850988,
+      "directional_win_rate": 0.4511173184357542,
+      "p_binom_vs_coinflip": 0.00986996500023247,
+      "market_mean": -0.0029406441745390478,
+      "market_win_rate": 0.4908962039436227,
+      "excess_directional_return": 0.007136841233390036,
+      "t_stat": 0.409603186593441,
+      "p_ttest": 0.6822197399853599,
+      "boot_p": 0.203
+    },
+    "h30": {
+      "n": 716,
+      "mean_ret": 0.006170755795708135,
+      "directional_win_rate": 0.4664804469273743,
+      "p_binom_vs_coinflip": 0.07893500766027864,
+      "market_mean": -0.005860138164218534,
+      "market_win_rate": 0.4914350130159911,
+      "excess_directional_return": 0.012030893959926669,
+      "t_stat": 0.4167335740697316,
+      "p_ttest": 0.6769983711971199,
+      "boot_p": 0.1672
+    },
+    "h60": {
+      "n": 716,
+      "mean_ret": -0.021676135505513765,
+      "directional_win_rate": 0.43575418994413406,
+      "p_binom_vs_coinflip": 0.0006615530511629397,
+      "market_mean": -0.011628106537134848,
+      "market_win_rate": 0.489397567950894,
+      "excess_directional_return": -0.010048028968378917,
+      "t_stat": -1.1565306715437587,
+      "p_ttest": 0.24785042478889394,
+      "boot_p": 0.7098
+    }
+  },
+  "HIGHCONF_sell (sell_signal AND confidence>=6/7)": {
+    "h5": {
+      "n": 911,
+      "mean_ret": 0.01215742970420671,
+      "directional_win_rate": 0.45773874862788144,
+      "p_binom_vs_coinflip": 0.011761337569683308,
+      "market_mean": -0.0009805436875636277,
+      "market_win_rate": 0.5042696315917884,
+      "excess_directional_return": -0.013137973391770337,
+      "t_stat": -1.8840557810703662,
+      "p_ttest": 0.05987601275920041,
+      "boot_p": 0.9974
+    },
+    "h15": {
+      "n": 911,
+      "mean_ret": 0.015719082527351685,
+      "directional_win_rate": 0.442371020856202,
+      "p_binom_vs_coinflip": 0.0005624233200113749,
+      "market_mean": -0.0029406441745390478,
+      "market_win_rate": 0.5087203560182657,
+      "excess_directional_return": -0.018659726701890735,
+      "t_stat": -1.5144808535319545,
+      "p_ttest": 0.13025116545368373,
+      "boot_p": 0.9948
+    },
+    "h30": {
+      "n": 911,
+      "mean_ret": 0.030778251005670228,
+      "directional_win_rate": 0.4500548847420417,
+      "p_binom_vs_coinflip": 0.0028451332556308213,
+      "market_mean": -0.005860138164218534,
+      "market_win_rate": 0.5084255299367795,
+      "excess_directional_return": -0.03663838916988876,
+      "t_stat": -2.2012183159555803,
+      "p_ttest": 0.027970989143234214,
+      "boot_p": 0.9996
+    },
+    "h60": {
+      "n": 911,
+      "mean_ret": 0.032199744434849624,
+      "directional_win_rate": 0.4610318331503842,
+      "p_binom_vs_coinflip": 0.020333619010008568,
+      "market_mean": -0.011628106537134848,
+      "market_win_rate": 0.5105094282592015,
+      "excess_directional_return": -0.043827850971984474,
+      "t_stat": -1.729983375081002,
+      "p_ttest": 0.08397230338639032,
+      "boot_p": 0.9986
+    }
+  }
+}
