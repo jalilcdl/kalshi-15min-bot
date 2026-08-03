@@ -116,6 +116,15 @@ def _load_strike_prob_summary():
 
 
 @st.cache_data(ttl="1h")
+def _load_hit_target_summary():
+    import json
+    path = ROOT / "data" / "validation" / "hit_target_side_selection_summary.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+@st.cache_data(ttl="1h")
 def _load_exit_timing_summary():
     import json
     path = ROOT / "data" / "validation" / "exit_timing_summary.json"
@@ -649,6 +658,43 @@ def render_performance():
             "Deployed at 35% anyway — paper trading exists to test the strategy actually "
             "intended to be run, not the backtest optimum. Full methodology and the trade-by-"
             "trade decomposition: `research/exit_timing/README.md` in this project."
+        )
+
+    st.markdown("### Side-selection model — tested, and rejected")
+    ht = _load_hit_target_summary()
+    if ht is None:
+        st.warning("Summary not found at data/validation/hit_target_side_selection_summary.json.")
+    else:
+        b = ht["dataset_b_side_selection"]
+        rates = b["hit_rate_by_strategy"]
+        st.info(
+            "Built and walk-forward validated a model specifically targeting \"which side hits "
+            "the 30% favorable move\" — a fair question, since nothing before this tested side "
+            "selection directly for the scalp strategy. **Result: it doesn't beat a coin flip, "
+            "and the model already in production beats it decisively. Not deployed.**"
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Coin flip", f"{rates['coin_flip']*100:.1f}%", help="Hit rate on chosen side")
+        c2.metric("Always cheaper side", f"{rates['always_cheaper_side']*100:.1f}%",
+                  help="Mechanical, direction-agnostic rule")
+        c3.metric("New fitted side-selector", f"{rates['fitted_hit_target_side_selector']*100:.1f}%",
+                  help="Purpose-built for this exact question")
+        c4.metric("Existing settlement model", f"{rates['existing_settlement_probability_model']*100:.1f}%",
+                  help="Already running in production — built for a different question entirely")
+        st.warning(
+            f"The new model, built specifically to answer this question, ties with a coin flip and "
+            f"the naive \"cheaper side\" rule (p={b['significance']['fitted_model_vs_cheaper_side']['p_value']:.3f}, "
+            "not significant). The **existing** settlement-probability model — built to predict "
+            "settlement, not this — wins by a wide, highly significant margin "
+            f"(p={b['significance']['settlement_model_vs_cheaper_side']['p_value']:.4f}) because a "
+            "\"likely to settle YES\" read implies a real drift toward 100¢ that a hit-rate-only "
+            "model has no way to see."
+        )
+        st.caption(
+            "A validated negative result, not a wasted one — it confirms the side-selection logic "
+            "already in `paper_trader.py` from a fully independent angle. Both models were tested "
+            "properly (side-symmetric dataset, no circularity) before being set aside — see "
+            "`research/exit_timing/README.md` section 5b."
         )
 
 

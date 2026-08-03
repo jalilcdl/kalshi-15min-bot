@@ -129,6 +129,67 @@ selling early "works" (exits positively) much more often. Watch the live
 paper-trading numbers in the dashboard's Trade log page against this
 expectation as real data accumulates.
 
+## 5b. Direct-regression side-selection model — a validated null result
+
+Follow-up: could a model built specifically to predict "which side hits
++30%" pick sides better than what `paper_trader.py` already uses? Tested
+properly, in two parts, and the honest answer is **no** — with a genuinely
+useful confirmatory finding underneath it.
+
+**Part 1 — confidence gate (`scripts/fit_hit_target_model.py`).** Fit
+`P(hit +30% | side, entry_price, minutes_remaining, realized_vol)` on the
+2,790 trades in `exit_timing_trades.csv`, same walk-forward rigor as
+everywhere else. Clears the base rate (Brier 0.1547 vs. 0.1665, p<0.0001) —
+but is statistically **indistinguishable from just using entry price alone**
+(p=0.923). Nothing new here: side, time remaining, and volatility add zero
+information once entry price is known, and entry price's importance was
+already obvious (cheap contracts have more room to travel 30% before hitting
+the 0-100¢ ceiling).
+
+**Important scope problem with Part 1**: `exit_timing_trades.csv` only
+contains the side the settlement-probability model **already chose** to
+enter. A model fit on it can only ever answer "given this side was picked,
+how likely is it to hit +30%" — using it to validate *side selection* would
+be circular, since the sample never saw what the other side would have done.
+
+**Part 2 — genuine side selection (`scripts/side_selection_backtest.py`).**
+Fixed that by rebuilding a side-symmetric dataset directly from the real
+candlestick data: both the YES and the NO hypothetical outcome, computed for
+every checkpoint-1 row across all 4,244 markets, unconditional on any
+model's prior choice (4,244 × 2 = 8,488 rows, cached in
+`results/side_symmetric_dataset.csv`). Fit the same walk-forward model as a
+standalone side-picker (pick whichever side it rates higher) and compared
+against real alternatives, not just a coin flip:
+
+| Side-selection strategy | Hit rate on chosen side |
+|---|---|
+| Coin flip | 65.6% |
+| Always take the cheaper side (mechanical, direction-agnostic) | 64.1-64.4% |
+| **Fitted hit-target side-selection model** | 65.8% |
+| **Existing settlement-probability model's pick** | **75.4%** |
+
+The new model, purpose-built for exactly this question, ties with a coin
+flip and the naive cheaper-side rule (p=0.292 vs. cheaper-side — not
+significant). The **existing** settlement-probability model — built to
+answer a completely different question (will this settle YES/NO) — beats
+all of them by a wide, highly significant margin (gap +0.113 vs.
+cheaper-side, p<0.0001).
+
+**Why:** a "likely to settle YES" read means that side's price is expected
+to trend toward 100¢ as the window plays out — a real directional lean that
+naturally produces the large relative gains needed to clear a 30% target
+along the way. Entry price alone or a coin flip carries no directional
+information, so neither reliably rides a trend toward the target the way an
+actual settlement forecast does.
+
+**Decision: did not wire either new model into `paper_trader.py`.** Per the
+original bar ("if it clears validation") — it didn't. The existing
+settlement-probability model's side selection is confirmed, from a fully
+independent angle, to already be the best available choice for this
+strategy too. That's a real, useful result: it's a second, unrelated
+validation of a decision already in production, not a wasted exercise.
+Full numbers: `results/hit_target_side_selection_summary.json`.
+
 ## 6. Reproducing this
 
 ```
@@ -136,6 +197,8 @@ cd scripts
 python fetch_candlesticks.py ../data/candlesticks.csv   # resumable, ~25 min for the full history
 python exit_timing_backtest.py
 python pnl_comparison.py
+python fit_hit_target_model.py           # confidence-gate model (§5b, part 1)
+python side_selection_backtest.py        # side-symmetric dataset + selection test (§5b, part 2)
 ```
 
 ## 7. Files
@@ -145,5 +208,9 @@ data/candlesticks.csv                Real 1-min price/bid/ask history, 4,244 mar
 scripts/fetch_candlesticks.py        Rate-limited, resumable candlestick fetcher
 scripts/exit_timing_backtest.py      Entry replay + hit-rate/time-to-target analysis
 scripts/pnl_comparison.py            Full round-trip P&L: sell-early vs. hold, real fees
+scripts/fit_hit_target_model.py       Confidence-gate model on already-entered trades (§5b pt.1)
+scripts/side_selection_backtest.py    Side-symmetric dataset + genuine side-selection test (§5b pt.2)
 results/exit_timing_trades.csv       Every entered trade: entry, exit prices/times per threshold
+results/side_symmetric_dataset.csv    Both YES/NO hypothetical outcomes, all 4,244 markets
+results/hit_target_side_selection_summary.json  Full numbers backing §5b
 ```

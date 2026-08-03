@@ -1,0 +1,32 @@
+{
+  "as_of": "2026-08-01",
+  "dataset_a_hit_target_confidence": {
+    "description": "Walk-forward model predicting P(hit +30% | side, entry_price, minutes_remaining, realized_vol) fit on exit_timing_trades.csv -- the side ALREADY chosen by the settlement-probability model's edge gate. Answers 'given this side was picked, how likely is it to hit +30%', not 'which side should I pick'.",
+    "n_trades": 2790,
+    "base_rate": 0.786,
+    "brier": {"base_rate_only": 0.1665, "entry_price_only": 0.1547, "full_model": 0.1547},
+    "significance": {
+      "full_vs_base_rate": {"p_value": 0.0000, "significant": true},
+      "full_vs_entry_price_only": {"p_value": 0.923, "significant": false}
+    },
+    "conclusion": "Statistically clears the base rate, but is indistinguishable from simply using entry price alone -- side, minutes remaining, and realized vol add nothing once entry price is known. Not a meaningfully new model; entry price was already known to be the dominant driver."
+  },
+  "dataset_b_side_selection": {
+    "description": "Side-symmetric dataset: both YES and NO hypothetical outcomes computed for every checkpoint-1 row across all 4,244 markets with candlestick data, unconditional on any existing model's side choice -- built specifically to test genuine side-selection without the circularity of dataset A.",
+    "n_markets": 4244,
+    "base_rate_unconditional": 0.6556,
+    "hit_rate_by_strategy": {
+      "coin_flip": 0.656,
+      "always_cheaper_side": 0.641,
+      "fitted_hit_target_side_selector": 0.658,
+      "existing_settlement_probability_model": 0.754
+    },
+    "significance": {
+      "settlement_model_vs_cheaper_side": {"gap": 0.1126, "p_value": 0.0000, "significant": true},
+      "fitted_model_vs_cheaper_side": {"gap": -0.0148, "p_value": 0.292, "significant": false}
+    },
+    "conclusion": "A model built specifically to predict 'which side hits +30%' does not beat a coin flip or the naive cheaper-side rule. The EXISTING settlement-probability model -- built for a different question (will this settle YES/NO) and already running in production -- beats every alternative tested, including the model purpose-built for this exact question, by a wide and highly significant margin (75.4% vs 65.6% coin-flip-equivalent)."
+  },
+  "decision": "Did NOT wire either new model into paper_trader.py's side-selection. Per the original conditional ('if it clears validation'), neither dataset A nor dataset B's model cleared the bar: A is redundant with entry price, B is beaten decisively by the model already in use. The existing settlement-probability model's side selection is validated to remain the best available choice, now confirmed from an independent angle (favorable-move hit-rate, not just settlement accuracy).",
+  "why_this_makes_sense": "The settlement model's 'likely to settle YES' read means that side's price is expected to trend toward 100c as the window plays out -- a rising trajectory that naturally produces the large relative gains needed to clear a 30% target along the way. Entry price alone or a coin flip carries no such directional information, so neither reliably rides a trend toward the target."
+}

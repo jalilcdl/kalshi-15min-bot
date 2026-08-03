@@ -67,7 +67,20 @@ def _stamp():
 
 
 def decide_trade(price: float, market) -> dict | None:
-    """Returns a candidate trade dict, or None if no side clears the edge threshold."""
+    """Returns a candidate trade dict, or None if no side clears the edge threshold.
+
+    Side selection here is deliberately still predict_p_yes() (the settlement-
+    probability model), not a model targeting "which side hits the exit target."
+    That alternative was built and walk-forward validated (research/exit_timing/
+    scripts/side_selection_backtest.py) on a side-symmetric dataset (both YES and
+    NO outcomes, unconditional on any prior model's choice, 4,244 markets) and
+    lost decisively: 65.8% hit-rate on its chosen side, tied with a coin flip
+    (65.6%) and the naive "always take the cheaper side" rule (64.1%), while THIS
+    model's side choice hits 75.4% -- because "likely to settle YES" implies a
+    real drift toward 100c that a hit-rate-only model has no way to see. Kept as
+    a validated negative result, not silently discarded -- see
+    research/exit_timing/README.md section 5b.
+    """
     mins_remaining = market.minutes_remaining()
     if mins_remaining <= config.FINAL_MINUTES_NOISY:
         return None
