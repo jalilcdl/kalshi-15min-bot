@@ -215,6 +215,7 @@ def _votes_table(sig):
 _SKIP_TEXT = {
     "final_minutes": f"Final {config.FINAL_MINUTES_NOISY} minutes — settlement-print noise dominates.",
     "no_quote": "No live bid/ask available for this market yet.",
+    "no_strike": "Strike not published yet (TBD) — no read computable until Kalshi sets it.",
     "too_close_to_strike": ("Too close to the strike relative to current volatility — "
                             "the model isn't trusted here."),
     "edge_too_small": f"No side's edge clears the {config.PAPER_TRADE_MIN_EDGE*100:.0f}c minimum after fees.",
@@ -244,12 +245,24 @@ def _model_read_card(price, market, sig, mins_left):
 
     decision = evaluate_trade(price, market, realized_vol_pct=sig.realized_vol_pct)
 
+    # The live model read stays on screen and keeps updating for the whole
+    # window, including during sit-out stretches -- it's the number the user
+    # watches evolve. Only the ACTION below it is gated. (evaluate_trade()
+    # attaches the read to its early-skip returns too, precisely so this can
+    # never go blank mid-window.)
     if decision.p_yes is not None:
         side = "YES" if decision.p_yes >= 0.5 else "NO"
         side_prob = decision.p_yes if side == "YES" else 1.0 - decision.p_yes
-        st.markdown(f"**Model read: {side_prob*100:.0f}% {side}**")
+        st.metric(f"Model read — P({side})", f"{side_prob*100:.1f}%",
+                  help="Live settlement probability from the validated distance+time+volatility "
+                       "model. Updates every 15s for the full window, independent of whether "
+                       "the entry gates currently allow a trade.")
+        if decision.dist_over_reachable is not None:
+            st.caption(f"P(YES) {decision.p_yes*100:.1f}%  ·  realized vol {decision.realized_vol:.3f}%  "
+                       f"·  dist/reachable {decision.dist_over_reachable:.2f}  "
+                       f"·  {decision.mins_remaining:.1f}m left")
     else:
-        st.markdown("**Model read: n/a**")
+        st.metric("Model read", "n/a")
 
     if decision.action == "enter":
         st.success(f"**TRADE THIS** — {decision.side.upper()} @ {decision.entry_price*100:.0f}c · "

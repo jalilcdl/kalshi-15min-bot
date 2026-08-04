@@ -107,6 +107,7 @@ import telegram_client
 import trade_log
 from alert_message import build_entry_alert, build_target_hit_alert, build_paper_entry_followup_alert
 from coinbase_feed import fetch_1min_candles, latest_price
+from indicators import compute_signals
 from kalshi_feed import get_active_market, get_market_by_ticker
 from paper_trader import evaluate_trade
 
@@ -282,7 +283,9 @@ def check_entry_alert(alerted: dict[str, str]) -> bool:
 
     candles = fetch_1min_candles()
     price = latest_price(candles)
-    decision = evaluate_trade(price, market)
+    # Reuse these candles' vol -- evaluate_trade() would otherwise re-fetch the
+    # same Coinbase data a second time within this one alert evaluation.
+    decision = evaluate_trade(price, market, realized_vol_pct=compute_signals(candles).realized_vol_pct)
     msg = build_entry_alert(price, market, decision)
     if telegram_client.send(msg):
         alerted[market.ticker] = decision.action  # "enter" or "skip" -- read by check_new_entries()

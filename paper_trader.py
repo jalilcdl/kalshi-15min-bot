@@ -106,9 +106,10 @@ def evaluate_trade(price: float, market, realized_vol_pct: float | None = None) 
     the 2026-08-04 investigation and dashboard/app.py's _model_read_card().
 
     realized_vol_pct: pass an already-computed value to avoid a redundant
-    fetch_1min_candles() network call. The dashboard's 15s-refresh fragment
-    already has this from its own cached candles; paper_trader's own loop
-    leaves it None and lets this function fetch.
+    fetch_1min_candles() network call. Every caller already holds candles (it
+    needs them for `price`), so all of them should pass this -- the None
+    fallback exists only so the function stays usable standalone in tests and
+    one-off scripts.
 
     Side selection here is deliberately still predict_p_yes() (the settlement-
     probability model), not a model targeting "which side hits the exit target."
@@ -123,27 +124,47 @@ def evaluate_trade(price: float, market, realized_vol_pct: float | None = None) 
     research/exit_timing/README.md section 5b.
     """
     mins_remaining = market.minutes_remaining()
+
+    # The model read is computed FIRST and attached to every return path below,
+    # including the early skips. It is diagnostic data, not a decision: the
+    # gates decide the ACTION, but "what does the model currently think" stays
+    # answerable for the entire window. The dashboard shows this continuously
+    # (the user watches the number evolve all 15 minutes); when the early skip
+    # branches returned p_yes=None it rendered "Model read: n/a" for roughly 10
+    # of every 15 minutes. Keep the gate ORDER below unchanged -- it defines the
+    # sit-out semantics that bot.py's alerts and the dashboard both report.
+    # strike can legitimately be unpublished ("Target price: TBD") early in a
+    # window -- kalshi_feed documents this. Every current caller guards for it,
+    # but compute_features() would raise on None, so don't make that guard
+    # load-bearing: fall through with an empty read and let the gates below
+    # still return their normal reason.
+    if market.strike is not None:
+        if realized_vol_pct is None:
+            realized_vol_pct = compute_signals(fetch_1min_candles()).realized_vol_pct
+        feats = compute_features(price, market.strike, mins_remaining, realized_vol_pct)
+        p_yes = predict_p_yes(price, market.strike, mins_remaining, realized_vol_pct)
+        common = dict(p_yes=p_yes, realized_vol=realized_vol_pct,
+                      dist_over_reachable=feats["dist_over_reachable"],
+                      mins_remaining=mins_remaining)
+    else:
+        feats, p_yes = None, None
+        common = dict(mins_remaining=mins_remaining)
+
     if mins_remaining <= config.FINAL_MINUTES_NOISY:
-        return TradeDecision(action="skip", reason="final_minutes", mins_remaining=mins_remaining)
+        return TradeDecision(action="skip", reason="final_minutes", **common)
 
     mins_elapsed = (datetime.now(timezone.utc) - market.open_time).total_seconds() / 60.0
     if mins_elapsed > config.PAPER_TRADE_MAX_ENTRY_MINUTES_ELAPSED:
-        return TradeDecision(action="skip", reason="entry_window_closed", mins_remaining=mins_remaining)
+        return TradeDecision(action="skip", reason="entry_window_closed", **common)
 
     if market.yes_bid is None or market.yes_ask is None:
-        return TradeDecision(action="skip", reason="no_quote", mins_remaining=mins_remaining)
+        return TradeDecision(action="skip", reason="no_quote", **common)
 
-    if realized_vol_pct is None:
-        candles = fetch_1min_candles()
-        realized_vol_pct = compute_signals(candles).realized_vol_pct
+    if feats is None:  # strike still TBD -- nothing below here is computable
+        return TradeDecision(action="skip", reason="no_strike", **common)
 
     # Guardrail: don't trust the model within noise-level distance of the strike --
     # see config.PAPER_TRADE_MIN_DIST_OVER_REACHABLE for why (caught by the smoke test).
-    feats = compute_features(price, market.strike, mins_remaining, realized_vol_pct)
-    p_yes = predict_p_yes(price, market.strike, mins_remaining, realized_vol_pct)
-    common = dict(p_yes=p_yes, realized_vol=realized_vol_pct,
-                  dist_over_reachable=feats["dist_over_reachable"], mins_remaining=mins_remaining)
-
     if feats["dist_over_reachable"] < config.PAPER_TRADE_MIN_DIST_OVER_REACHABLE:
         return TradeDecision(action="skip", reason="too_close_to_strike", **common)
 
@@ -163,11 +184,11 @@ def evaluate_trade(price: float, market, realized_vol_pct: float | None = None) 
     return TradeDecision(action="skip", reason="edge_too_small", **common)
 
 
-def decide_trade(price: float, market) -> dict | None:
+def decide_trade(price: float, market, realized_vol_pct: float | None = None) -> dict | None:
     """Returns a candidate trade dict, or None if no side clears the edge threshold.
     Unchanged contract/behavior -- a thin wrapper around evaluate_trade() so
     existing callers (this module's own loop) are not affected by its addition."""
-    d = evaluate_trade(price, market)
+    d = evaluate_trade(price, market, realized_vol_pct=realized_vol_pct)
     if d.action != "enter":
         return None
     return dict(side=d.side, entry_price=d.entry_price, fee=d.fee,
@@ -319,7 +340,9 @@ def evaluate_once():
         print(f"[{_stamp()}] {market.ticker} already has a paper entry, skipping", flush=True)
         return
 
-    trade = decide_trade(price, market)
+    # Pass the vol we just derived from these candles -- evaluate_trade() would
+    # otherwise fetch the same Coinbase data a second time on every cycle.
+    trade = decide_trade(price, market, realized_vol_pct=compute_signals(candles).realized_vol_pct)
     if trade is None:
         print(f"[{_stamp()}] {market.ticker} price=${price:,.2f} strike=${market.strike:,.2f} "
               f"-- no edge clears threshold, no trade", flush=True)

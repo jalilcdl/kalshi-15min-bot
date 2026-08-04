@@ -46,6 +46,7 @@ _REASON_TEXT = {
         "settlement-print noise dominates, no call made."
     ),
     "no_quote": "No live bid/ask available for this market yet.",
+    "no_strike": "Strike not published yet (TBD) — no read computable until Kalshi sets it.",
     "too_close_to_strike": (
         "Distance to strike is inside the noise band for current volatility "
         "— the model isn't trusted this close (see config."
