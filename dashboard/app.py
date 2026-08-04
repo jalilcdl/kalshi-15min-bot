@@ -33,11 +33,11 @@ import config
 import trade_log
 from classifier import classify
 from coinbase_feed import fetch_1min_candles, fetch_range_1min, latest_price
-from fees import kalshi_fee
 from indicators import compute_signals
 from kalshi_feed import get_active_market, get_settled_markets
-from model.strike_probability import compute_features as model_features
-from model.strike_probability import predict_p_yes
+# THE shared entry-decision function -- also what bot.py's Telegram alerts use.
+# Deliberately not reimplemented here; see _model_read_card().
+from paper_trader import evaluate_trade
 from strike_distance import evaluate as evaluate_strike
 
 st.set_page_config(page_title="Kalshi BTC Intel", layout="wide", page_icon=":material/currency_bitcoin:")
@@ -209,44 +209,53 @@ def _votes_table(sig):
     return pd.DataFrame(rows)
 
 
+# Same skip-reason wording the Telegram alerts use (alert_message._REASON_TEXT),
+# phrased for the dashboard. Kept parallel on purpose -- if the two surfaces
+# describe the same state in different words, that reads as a disagreement.
+_SKIP_TEXT = {
+    "final_minutes": f"Final {config.FINAL_MINUTES_NOISY} minutes — settlement-print noise dominates.",
+    "no_quote": "No live bid/ask available for this market yet.",
+    "too_close_to_strike": ("Too close to the strike relative to current volatility — "
+                            "the model isn't trusted here."),
+    "edge_too_small": f"No side's edge clears the {config.PAPER_TRADE_MIN_EDGE*100:.0f}c minimum after fees.",
+    "entry_window_closed": (f"More than {config.PAPER_TRADE_MAX_ENTRY_MINUTES_ELAPSED} min into the window — "
+                            "too late for a fresh entry (later entries have a validated lower "
+                            "target-hit rate; see research/exit_timing/README.md §5c)."),
+}
+
+
 def _model_read_card(price, market, sig, mins_left):
-    """The actual validated distance+time+vol model's live read -- same
-    function paper_trader.py calls to decide real (paper) entries. Replaces
-    the old strike_distance.py heuristic display, which was a different,
-    less-validated read the live paper trader was never actually using."""
+    """Live model read, rendered straight off paper_trader.evaluate_trade() --
+    the exact same call bot.py's Telegram alerts use.
+
+    This used to reimplement the entry math inline and had drifted badly from
+    the real thing: it was missing the final_minutes, entry_window_closed and
+    no_quote gates, so it displayed "clears the entry threshold right now" for
+    roughly 10 of every window's 15 minutes while the bot was correctly sitting
+    out. That is the dashboard-vs-Telegram disagreement the user reported
+    (2026-08-04). Never reimplement these gates here -- call evaluate_trade().
+
+    sig.realized_vol_pct is passed through so this shares the dashboard's
+    already-cached candles instead of triggering a second Coinbase fetch on
+    every 15s refresh tick."""
     if market.strike is None:
         st.caption("Strike not published yet (TBD) — model needs it to compute a read.")
         return
 
-    feats = model_features(price, market.strike, mins_left, sig.realized_vol_pct)
-    p_yes = predict_p_yes(price, market.strike, mins_left, sig.realized_vol_pct)
-    gated = feats["dist_over_reachable"] < config.PAPER_TRADE_MIN_DIST_OVER_REACHABLE
+    decision = evaluate_trade(price, market, realized_vol_pct=sig.realized_vol_pct)
 
-    side = "YES" if p_yes >= 0.5 else "NO"
-    side_prob = p_yes if side == "YES" else 1.0 - p_yes
-    st.markdown(f"**Model read: {side_prob*100:.0f}% {side}**")
-
-    if gated:
-        st.caption(
-            "Too close to the strike relative to current volatility — the model isn't trusted "
-            "here (same minimum-distance gate paper_trader.py uses)."
-        )
-        return
-
-    no_ask = 1.0 - market.yes_bid
-    fee_yes = kalshi_fee(config.PAPER_TRADE_SIZE, market.yes_ask) / config.PAPER_TRADE_SIZE
-    fee_no = kalshi_fee(config.PAPER_TRADE_SIZE, no_ask) / config.PAPER_TRADE_SIZE
-    edge_yes = p_yes - market.yes_ask - fee_yes
-    edge_no = (1.0 - p_yes) - no_ask - fee_no
-
-    if edge_yes >= config.PAPER_TRADE_MIN_EDGE and edge_yes >= edge_no:
-        st.caption(f"Edge (net of fee): **{edge_yes*100:+.1f}c** on YES — clears the paper "
-                   "trader's entry threshold right now.")
-    elif edge_no >= config.PAPER_TRADE_MIN_EDGE:
-        st.caption(f"Edge (net of fee): **{edge_no*100:+.1f}c** on NO — clears the paper "
-                   "trader's entry threshold right now.")
+    if decision.p_yes is not None:
+        side = "YES" if decision.p_yes >= 0.5 else "NO"
+        side_prob = decision.p_yes if side == "YES" else 1.0 - decision.p_yes
+        st.markdown(f"**Model read: {side_prob*100:.0f}% {side}**")
     else:
-        st.caption("No side clears the entry-edge threshold right now.")
+        st.markdown("**Model read: n/a**")
+
+    if decision.action == "enter":
+        st.success(f"**TRADE THIS** — {decision.side.upper()} @ {decision.entry_price*100:.0f}c · "
+                   f"edge after fees **{decision.edge*100:+.1f}c**")
+    else:
+        st.caption(f"**Sit out** — {_SKIP_TEXT.get(decision.reason, decision.reason)}")
 
 
 def _manual_position_tracker(market):
@@ -332,7 +341,12 @@ def _live_scoreboard():
     market, market_err = _get_active_market()
 
     stamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    st.caption(f"Last updated {stamp}")
+    st.caption(
+        f"Last updated {stamp} · refreshes every 15s (quotes cached up to 10s, BTC price up to 20s). "
+        "**This is a live read that updates all window long — the Telegram alert is a one-time "
+        "snapshot taken ~1-2 min after the window opens. Both use the same decision function, so "
+        "if they differ it's because the market moved since the alert fired, not because they disagree.**"
+    )
 
     with st.container(horizontal=True):
         st.metric("BTC-USD", f"${price:,.2f}", border=True)

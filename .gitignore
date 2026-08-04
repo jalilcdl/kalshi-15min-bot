@@ -37,6 +37,14 @@ __pycache__/
 # it, and it's the user's actual (paper, so far) trading history either way.
 data/trade_log.csv
 
+# bot.py's alert dedup state (which windows/target-hits it has already sent a
+# Telegram message for). Local runtime state, same reasoning as trade_log.csv:
+# it only has meaning on the machine actually running bot.py, and a stale
+# committed copy would be actively harmful -- a fresh clone would start up
+# believing it had already alerted on windows it never saw and silently
+# suppress them. Added 2026-08-04 with the persisted-state fix.
+data/bot_alert_state.json
+
 # Bulk historical research data (Coinbase 1-min bars, Kalshi settled markets
 # and candlesticks, feature tables, walk-forward predictions) -- large
 # (~33MB total), fully regenerable via the scripts in each research/*/scripts/

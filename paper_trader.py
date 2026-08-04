@@ -20,6 +20,12 @@ Entry rule (see config.py for the tunable constants):
   - At most one paper entry per market (checked against the existing log).
   - Skip the final FINAL_MINUTES_NOISY minutes of a window (settlement-print
     noise dominates there -- same guardrail strike_distance.py already uses).
+  - Skip entirely once PAPER_TRADE_MAX_ENTRY_MINUTES_ELAPSED minutes have passed
+    since the window opened, even if edge clears -- added 2026-08-04 after
+    research/exit_timing/README.md SS5c showed 30%-target hit rate declines
+    monotonically with entry lateness (78.6% at 1min -> 49.8% at 10min). Before
+    this, the continuous poll below would keep retrying every cycle and take
+    ANY edge that cleared, however late, right up to the final-minutes cutoff.
 
 Exit rule: this simulates the ACTUAL intended strategy -- buy early, sell
 once the position has moved config.PAPER_TRADE_EXIT_TARGET in your favor,
@@ -40,6 +46,7 @@ Usage:
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,8 +73,42 @@ def _stamp():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def decide_trade(price: float, market) -> dict | None:
-    """Returns a candidate trade dict, or None if no side clears the edge threshold.
+@dataclass
+class TradeDecision:
+    """Full explanation of a single evaluation, not just the enter/skip result --
+    used by the game-plan alert (alert_message.py) to say WHY a window was
+    skipped, not just that it was. action is "enter" or "skip"; reason is one
+    of "final_minutes", "no_quote", "too_close_to_strike", "edge_too_small", "ok"."""
+    action: str
+    reason: str
+    side: str | None = None
+    entry_price: float | None = None
+    fee: float | None = None
+    p_model: float | None = None
+    edge: float | None = None
+    p_yes: float | None = None
+    realized_vol: float | None = None
+    dist_over_reachable: float | None = None
+    mins_remaining: float | None = None
+
+
+def evaluate_trade(price: float, market, realized_vol_pct: float | None = None) -> TradeDecision:
+    """Full decision with reasons -- see decide_trade() for the historical,
+    enter-or-None-only contract paper_trader's own loop still uses unchanged.
+
+    THE single source of truth for "would this bot enter right now, and if not
+    why not." bot.py's alerts AND the Streamlit dashboard's live model-read card
+    both call this -- do not reimplement these gates anywhere else. The dashboard
+    used to have its own inline copy of the edge math and drifted badly from this
+    function (it was missing the final_minutes, entry_window_closed, and no_quote
+    gates entirely, so it told the user "clears the entry threshold" for ~10 of
+    every window's 15 minutes while the bot was correctly sitting out) -- see
+    the 2026-08-04 investigation and dashboard/app.py's _model_read_card().
+
+    realized_vol_pct: pass an already-computed value to avoid a redundant
+    fetch_1min_candles() network call. The dashboard's 15s-refresh fragment
+    already has this from its own cached candles; paper_trader's own loop
+    leaves it None and lets this function fetch.
 
     Side selection here is deliberately still predict_p_yes() (the settlement-
     probability model), not a model targeting "which side hits the exit target."
@@ -83,20 +124,28 @@ def decide_trade(price: float, market) -> dict | None:
     """
     mins_remaining = market.minutes_remaining()
     if mins_remaining <= config.FINAL_MINUTES_NOISY:
-        return None
-    if market.yes_bid is None or market.yes_ask is None:
-        return None
+        return TradeDecision(action="skip", reason="final_minutes", mins_remaining=mins_remaining)
 
-    candles = fetch_1min_candles()
-    sig = compute_signals(candles)
+    mins_elapsed = (datetime.now(timezone.utc) - market.open_time).total_seconds() / 60.0
+    if mins_elapsed > config.PAPER_TRADE_MAX_ENTRY_MINUTES_ELAPSED:
+        return TradeDecision(action="skip", reason="entry_window_closed", mins_remaining=mins_remaining)
+
+    if market.yes_bid is None or market.yes_ask is None:
+        return TradeDecision(action="skip", reason="no_quote", mins_remaining=mins_remaining)
+
+    if realized_vol_pct is None:
+        candles = fetch_1min_candles()
+        realized_vol_pct = compute_signals(candles).realized_vol_pct
 
     # Guardrail: don't trust the model within noise-level distance of the strike --
     # see config.PAPER_TRADE_MIN_DIST_OVER_REACHABLE for why (caught by the smoke test).
-    feats = compute_features(price, market.strike, mins_remaining, sig.realized_vol_pct)
-    if feats["dist_over_reachable"] < config.PAPER_TRADE_MIN_DIST_OVER_REACHABLE:
-        return None
+    feats = compute_features(price, market.strike, mins_remaining, realized_vol_pct)
+    p_yes = predict_p_yes(price, market.strike, mins_remaining, realized_vol_pct)
+    common = dict(p_yes=p_yes, realized_vol=realized_vol_pct,
+                  dist_over_reachable=feats["dist_over_reachable"], mins_remaining=mins_remaining)
 
-    p_yes = predict_p_yes(price, market.strike, mins_remaining, sig.realized_vol_pct)
+    if feats["dist_over_reachable"] < config.PAPER_TRADE_MIN_DIST_OVER_REACHABLE:
+        return TradeDecision(action="skip", reason="too_close_to_strike", **common)
 
     no_ask = 1.0 - market.yes_bid
     size = config.PAPER_TRADE_SIZE
@@ -106,12 +155,23 @@ def decide_trade(price: float, market) -> dict | None:
     edge_no = (1.0 - p_yes) - no_ask - fee_no / size
 
     if edge_yes >= config.PAPER_TRADE_MIN_EDGE and edge_yes >= edge_no:
-        return dict(side="yes", entry_price=market.yes_ask, fee=fee_yes,
-                    p_model=p_yes, edge=edge_yes, realized_vol=sig.realized_vol_pct)
+        return TradeDecision(action="enter", reason="ok", side="yes", entry_price=market.yes_ask,
+                             fee=fee_yes, p_model=p_yes, edge=edge_yes, **common)
     if edge_no >= config.PAPER_TRADE_MIN_EDGE:
-        return dict(side="no", entry_price=no_ask, fee=fee_no,
-                    p_model=1.0 - p_yes, edge=edge_no, realized_vol=sig.realized_vol_pct)
-    return None
+        return TradeDecision(action="enter", reason="ok", side="no", entry_price=no_ask,
+                             fee=fee_no, p_model=1.0 - p_yes, edge=edge_no, **common)
+    return TradeDecision(action="skip", reason="edge_too_small", **common)
+
+
+def decide_trade(price: float, market) -> dict | None:
+    """Returns a candidate trade dict, or None if no side clears the edge threshold.
+    Unchanged contract/behavior -- a thin wrapper around evaluate_trade() so
+    existing callers (this module's own loop) are not affected by its addition."""
+    d = evaluate_trade(price, market)
+    if d.action != "enter":
+        return None
+    return dict(side=d.side, entry_price=d.entry_price, fee=d.fee,
+                p_model=d.p_model, edge=d.edge, realized_vol=d.realized_vol)
 
 
 def already_entered(df: pd.DataFrame, ticker: str) -> bool:
@@ -178,7 +238,12 @@ def resolve_pending() -> int:
     # Force these to object dtype up front so resolving a trade doesn't crash.
     for c in ("result", "payout", "exit_time", "exit_price", "exit_fee", "exit_reason"):
         df[c] = df[c].astype("object")
-    pending_mask = (df["mode"] == "paper") & (df["result"].isna() | (df["result"] == ""))
+    # A target-hit row must count as resolved too, not just a populated "result" --
+    # the target-hit branch below sets "result" directly now, but this OR keeps
+    # already-written rows from a prior version of this file (which didn't) safe
+    # from being silently re-processed and overwritten by the settlement branch.
+    already_resolved = (df["result"].notna() & (df["result"] != "")) | (df["exit_reason"] == "target_hit")
+    pending_mask = (df["mode"] == "paper") & ~already_resolved
     pending = df[pending_mask]
     if pending.empty:
         return 0
@@ -222,6 +287,16 @@ def resolve_pending() -> int:
             df.loc[idx, "exit_fee"] = round(exit_fee, 4)
             df.loc[idx, "exit_reason"] = "target_hit"
             df.loc[idx, "payout"] = round(payout, 4)
+            # A target-hit sale is a locked-in win on the side you took -- set
+            # "result" to match immediately so this row leaves pending_mask now,
+            # not several cycles later. Without this the row kept re-triggering
+            # this branch every poll (overwriting exit_price/payout with a
+            # fresher live price each time) until real settlement finally set
+            # "result" itself -- and since the settlement branch runs BEFORE
+            # this one and only checks market.result, it would then silently
+            # overwrite a real early exit with exit_reason="settlement" and a
+            # flat payout, discarding the actual locked-in fill entirely.
+            df.loc[idx, "result"] = row["side"]
             resolved += 1
             print(f"[{_stamp()}] PAPER SOLD EARLY {row['market_ticker']} side={row['side']} "
                   f"gain={gain:+.1%} exit_price={exit_val:.2f} payout=${payout:.2f}", flush=True)

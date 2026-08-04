@@ -106,6 +106,23 @@ PAPER_TRADE_MIN_EDGE = 0.03  # minimum model-implied edge net of fees (in price-
                             # rule against) -- revisit once paper-trading data accumulates.
 PAPER_TRADE_POLL_SECONDS = 60  # how often paper_trader.py evaluates the active market
 
+# Stop opportunistically entering once this many minutes have elapsed since the
+# window opened, even if edge later clears PAPER_TRADE_MIN_EDGE. Added 2026-08-04
+# after a user-flagged live trade entered ~5min in on a thin (4.4c) edge -- before
+# this, the continuous poll loop would keep retrying and take ANY edge that cleared,
+# however late, up to the FINAL_MINUTES_NOISY cutoff. research/exit_timing/README.md
+# SS5c found the 30%-target hit rate declines monotonically with entry lateness
+# (78.6% at 1min down to 49.8% at 10min) -- that finding was about NOT delaying the
+# first look, but the same data applies here: entries the early ~60-120s check missed
+# and the continuous loop caught later are, by construction, always the late kind.
+# Originally set to 10 (widest option offered); revised down to 5 same-day per
+# explicit user decision -- 5 is where SS5c's data starts showing meaningfully worse
+# hit rates (checkpoint 5: 60.1% vs checkpoint 1: 78.6%), so the safety net now stops
+# right at the point the data flags as the meaningful cliff, not the loosest bound
+# tested. FINAL_MINUTES_NOISY (last 2 min of the window) still applies underneath
+# this as a separate, stricter guard -- unchanged.
+PAPER_TRADE_MAX_ENTRY_MINUTES_ELAPSED = 5
+
 # Minimum distance-over-reachable-move required before the model is trusted at all.
 # The model's smoke test caught a real failure mode on its very first live evaluation:
 # right at distance_pct ~ 0 (a genuine coin-flip price, indistinguishable from Coinbase

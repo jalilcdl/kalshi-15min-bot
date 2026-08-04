@@ -1,8 +1,10 @@
 # Kalshi 15-Min BTC Intel Bot
 
-Personal-use alert bot in the Aureus Predicts AI format (trend / momentum /
-volatility read + recommendation + avoid list), retuned for Kalshi's
-15-minute BTC up/down markets (`KXBTC15M`). Delivered via Telegram.
+Personal-use Telegram alert bot for Kalshi's 15-minute BTC up/down markets
+(`KXBTC15M`), built on the validated distance+time+volatility settlement
+model (`model/strike_probability.py`) — the same model and fee/edge logic
+`paper_trader.py` actually trades on, not the 7-indicator confluence engine
+(shown to have no validated edge — see `research/kalshi-btc-validation/`).
 **Information/alert layer only — no trading or order execution.**
 
 ## How the Kalshi market works (verified against the live API)
@@ -27,11 +29,24 @@ console, which is the easiest way to sanity-check before wiring Telegram.
 
 ```
 python bot.py --once      # single evaluation, print/send one alert, exit
-python bot.py             # main loop: evaluate every 1-min bar
+python bot.py             # main loop: evaluate every ~60s
 ```
 
-Alert triggers: market state change, confidence band change, or a new
-15-min window opening. Otherwise throttled to one alert per 5 minutes.
+Two alert types, both Telegram, both built from real live data:
+
+- **Entry "game plan"** — once per window, fired ~60-240s after it opens (the
+  same early read the model and `paper_trader.py` use for their own first
+  evaluation). Says the model's live P(YES), which side (if any) clears the
+  real fee-adjusted edge gate, and — if there's a trade — the exit-target
+  price, including the case where the target is mathematically unreachable
+  from that entry price (already above where +35% would cross 100¢). If a
+  window first comes into view more than 4 minutes old (e.g. the bot just
+  restarted), it's skipped rather than sent late.
+- **Target-hit nudge** — fired the moment a live paper position (from
+  `paper_trader.py`'s own `data/trade_log.csv`) crosses the favorable-move
+  exit target, so the alert and the actual paper trade can never disagree.
+  On first startup, all *existing* target-hit trades are marked as already
+  notified so days of paper-trading history don't get replayed as alerts.
 
 ## Dashboard (read-only)
 

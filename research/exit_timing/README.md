@@ -190,6 +190,75 @@ strategy too. That's a real, useful result: it's a second, unrelated
 validation of a decision already in production, not a wasted exercise.
 Full numbers: `results/hit_target_side_selection_summary.json`.
 
+## 5c. Does waiting until 2-5 minutes into the window give a better read?
+
+A specific, testable claim from real trading experience: does entering later
+(2-5 min in, instead of the ~60-120s mark everything here uses) give a more
+reliable read on whether the 30% target hits? Tested directly, real data,
+same production entry rule (`decide_entry()`, unchanged) replayed at
+checkpoints 1/2/3/4/5/7/10 minutes using the real candlestick price paths.
+
+**Short answer: no — the data says the opposite, clearly.**
+
+| Checkpoint | Entries (of 4,244) | Hit rate | Naive baseline hit rate | Median mins left | Median time-to-hit | Mean edge |
+|---|---|---|---|---|---|---|
+| **1 min** | 2,790 (65.7%) | **78.6%** | 75.4% | 14.0 | 4.0m | 16.9¢ |
+| 2 min | 2,766 (65.2%) | 72.7% | 68.6% | 13.0 | 4.0m | 15.3¢ |
+| 3 min | 2,750 (64.8%) | 66.2% | 61.7% | 12.0 | 4.0m | 14.4¢ |
+| 4 min | 2,737 (64.5%) | 62.9% | 56.7% | 11.0 | 3.0m | 13.7¢ |
+| 5 min | 2,658 (62.6%) | 60.1% | 51.2% | 10.0 | 3.0m | 13.4¢ |
+| 7 min | 2,471 (58.2%) | 57.1% | 38.5% | 8.0 | 2.0m | 12.0¢ |
+| 10 min | 2,521 (59.4%) | 49.8% | 25.7% | 5.0 | 1.0m | 12.4¢ |
+
+Every later checkpoint is significantly worse than checkpoint 1 (paired
+market-level bootstrap, same markets compared at both timestamps): p<0.0001
+at every single checkpoint, monotonically declining from 78.6% to 49.8%.
+
+**Both confounds you flagged, checked directly, not glossed over:**
+
+- **Less time remaining is real and mechanical** (median 14 min left at
+  checkpoint 1 down to 5 min at checkpoint 10) — but the reported hit rate
+  already reflects this honestly; it scans the real remaining candles to
+  the real close, no synthetic time budget. So this isn't an artifact to
+  correct for, it's the actual, honest answer to "if you enter this late,
+  what's your real chance." Read the decline as "this is genuinely worse,"
+  not "the data needs adjusting."
+- **The naive, model-free baseline (whichever side is currently ahead)
+  declines even faster** than the entry-gated rate (75.4% → 25.7% vs. 78.6%
+  → 49.8%). That means the entry rule's edge *over the naive baseline*
+  actually widens with later entry (+3.2 points at checkpoint 1 growing to
+  +24.1 points at checkpoint 10) — waiting does make the model's selection
+  relatively more valuable. But the absolute odds of success are still
+  clearly worse the later you wait, because there's mechanically less
+  runway. Relative improvement does not overcome absolute decline here.
+
+**Checked the "sharper confidence" alternative too**, in case "more
+accurate" meant "the read feels more certain" rather than "the target hits
+more often": mean edge magnitude also *decreases* with later checkpoints
+(16.9¢ at 1 min down to ~12-14¢ from 5-10 min). No support for that reading
+either — the model isn't becoming more confident later, it's becoming less.
+
+**A plausible, honest explanation for the experience, not a data-backed
+one:** this project already found (§3b of `../strike_probability/README.md`)
+that *settlement* prediction (will it settle YES/NO) gets dramatically more
+accurate with elapsed time — Brier 0.2304 at checkpoint 1 improving to
+~0.0757 by checkpoint 11+. That's real, just for a different question than
+"will it swing 30% before close." It's plausible the two are getting
+conflated — a genuinely sharper settlement read later in the window doesn't
+mean a better 30%-swing read, because the swing question is dominated by
+how much runway is left, not by how sure the model is.
+
+**Implication for alert timing and the paper trader: no change.** The
+current ~60-120s entry point isn't just unchanged by this test — it's
+confirmed as the best-performing point among everything tested here, on
+both hit rate and edge magnitude. Moving entries to 2-5 minutes would make
+things worse on the numbers, not better. (Earlier than ~60-120s isn't
+testable with 1-min candle data — that's the real floor, same limit noted
+in `../strike_probability/README.md` §3b.)
+
+Reproduce: `python scripts/entry_timing_backtest.py`. Full per-checkpoint
+data: `results/entry_timing_checkpoint_{1,2,3,4,5,7,10}.csv`.
+
 ## 6. Reproducing this
 
 ```
@@ -199,6 +268,7 @@ python exit_timing_backtest.py
 python pnl_comparison.py
 python fit_hit_target_model.py           # confidence-gate model (§5b, part 1)
 python side_selection_backtest.py        # side-symmetric dataset + selection test (§5b, part 2)
+python entry_timing_backtest.py          # 2-5min entry-timing test (§5c)
 ```
 
 ## 7. Files
@@ -213,4 +283,6 @@ scripts/side_selection_backtest.py    Side-symmetric dataset + genuine side-sele
 results/exit_timing_trades.csv       Every entered trade: entry, exit prices/times per threshold
 results/side_symmetric_dataset.csv    Both YES/NO hypothetical outcomes, all 4,244 markets
 results/hit_target_side_selection_summary.json  Full numbers backing §5b
+scripts/entry_timing_backtest.py     Tests whether entering at 2-5min beats ~60-120s (§5c)
+results/entry_timing_checkpoint_*.csv  Per-checkpoint entry/hit data backing §5c
 ```
