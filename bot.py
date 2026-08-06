@@ -94,14 +94,6 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Under pythonw.exe there is no console (stdout/stderr are None) -- log to file.
-# In a regular console, force UTF-8 so the alert emoji can print (cp1252 can't).
-if sys.stdout is None or sys.stderr is None:
-    _log = open(Path(__file__).parent / "bot.log", "a", encoding="utf-8", buffering=1)
-    sys.stdout = sys.stderr = _log
-elif sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
 import config
 import telegram_client
 import trade_log
@@ -123,6 +115,30 @@ ALERT_STALENESS_SECONDS = 16 * 60  # ~one window + buffer. An entry or target-hi
                                    # prevented the 2026-08-03 flood on its own.
 STATE_FILE = Path(__file__).parent / "data" / "bot_alert_state.json"
 HEARTBEAT_EVERY_N_CYCLES = 15       # ~15 min at the normal 60s poll
+
+
+def _setup_console_logging():
+    """Under pythonw.exe there is no console (stdout/stderr are None) -- log to
+    file. In a regular console, force UTF-8 so the alert emoji can print
+    (cp1252 can't).
+
+    Called from __main__ only, never at import time -- see the matching note in
+    paper_trader._setup_console_logging(). Reassigning sys.stdout on import is
+    hostile to any process that imports this module, and the .encoding /
+    .reconfigure access raises AttributeError on hosts whose stdout is a
+    wrapper. Defensive: a logging convenience must never stop the bot starting.
+    """
+    try:
+        if sys.stdout is None or sys.stderr is None:
+            log = open(Path(__file__).parent / "bot.log", "a", encoding="utf-8", buffering=1)
+            sys.stdout = sys.stderr = log
+            return
+        encoding = getattr(sys.stdout, "encoding", None)
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if encoding and encoding.lower() != "utf-8" and callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def _stamp():
@@ -329,6 +345,7 @@ def run_loop():
 
 
 if __name__ == "__main__":
+    _setup_console_logging()
     if "--once" in sys.argv:
         alerted, notified_entries, notified_hits = load_state()
         c1 = check_entry_alert(alerted)

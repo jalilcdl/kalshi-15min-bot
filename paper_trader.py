@@ -50,13 +50,33 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Under pythonw.exe there is no console -- log to file. In a real console,
-# force UTF-8 so nothing chokes on non-ASCII. Same pattern as bot.py.
-if sys.stdout is None or sys.stderr is None:
-    _log = open(Path(__file__).parent / "paper_trader.log", "a", encoding="utf-8", buffering=1)
-    sys.stdout = sys.stderr = _log
-elif sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def _setup_console_logging():
+    """Under pythonw.exe there is no console -- log to file. In a real console,
+    force UTF-8 so nothing chokes on non-ASCII. Same pattern as bot.py.
+
+    MUST ONLY be called from __main__, never at import time. This module is
+    imported by dashboard/app.py (for evaluate_trade) and by bot.py, and this
+    used to run on import: it reassigned the importing process's sys.stdout/
+    sys.stderr to a log file, and on any host whose stdout is a wrapper
+    without .encoding/.reconfigure it raised AttributeError during import --
+    which on Streamlit Cloud surfaces as the generic "Oh no. Error running
+    app." A library module must not mutate global interpreter state on import.
+
+    Defensive throughout: a redirect for local convenience must never be the
+    reason a process fails to start.
+    """
+    try:
+        if sys.stdout is None or sys.stderr is None:
+            log = open(Path(__file__).parent / "paper_trader.log", "a",
+                       encoding="utf-8", buffering=1)
+            sys.stdout = sys.stderr = log
+            return
+        encoding = getattr(sys.stdout, "encoding", None)
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if encoding and encoding.lower() != "utf-8" and callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass  # keep whatever stdout we already have rather than failing to start
 
 import pandas as pd
 
@@ -369,6 +389,7 @@ def run_loop():
 
 
 if __name__ == "__main__":
+    _setup_console_logging()
     if "--once" in sys.argv:
         resolve_pending()
         evaluate_once()
