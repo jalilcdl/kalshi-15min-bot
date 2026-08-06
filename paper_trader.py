@@ -62,7 +62,7 @@ import pandas as pd
 
 import config
 import trade_log
-from coinbase_feed import fetch_1min_candles, latest_price
+from coinbase_feed import fetch_1min_candles, fetch_spot_price
 from fees import kalshi_fee
 from indicators import compute_signals
 from kalshi_feed import get_active_market, get_market_by_ticker
@@ -332,8 +332,13 @@ def evaluate_once():
     if market is None or market.strike is None:
         print(f"[{_stamp()}] no active market with a published strike yet", flush=True)
         return
-    candles = fetch_1min_candles()
-    price = latest_price(candles)
+    candles = fetch_1min_candles()          # volatility/indicator math only
+    spot = fetch_spot_price(candles)        # real-time price for the strike comparison
+    price = spot.price
+    if spot.source != "ticker":
+        age = (datetime.now(timezone.utc) - spot.ts).total_seconds()
+        print(f"[{_stamp()}] WARNING: ticker unavailable, using {age:.0f}s-old candle close "
+              f"${price:,.2f} -- entry decisions this cycle are on a stale price", flush=True)
 
     df = trade_log.load_log()
     if already_entered(df, market.ticker):

@@ -32,7 +32,7 @@ import streamlit as st
 import config
 import trade_log
 from classifier import classify
-from coinbase_feed import fetch_1min_candles, fetch_range_1min, latest_price
+from coinbase_feed import fetch_1min_candles, fetch_range_1min, fetch_spot_price
 from indicators import compute_signals
 from kalshi_feed import get_active_market, get_settled_markets
 # THE shared entry-decision function -- also what bot.py's Telegram alerts use.
@@ -77,7 +77,17 @@ _check_password()
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl="20s")
 def _get_candles():
+    """Volatility / indicator / chart history ONLY -- never the live price.
+    See coinbase_feed's module docstring (2026-08-06 incident)."""
     return fetch_1min_candles()
+
+
+@st.cache_data(ttl="5s")
+def _get_spot(_candles):
+    """Real-time price for the strike comparison. Short TTL because this is
+    the input the whole model read hinges on. Leading underscore on the arg
+    keeps Streamlit from trying to hash the candle list."""
+    return fetch_spot_price(_candles)
 
 
 @st.cache_data(ttl="10s")
@@ -348,18 +358,32 @@ def _live_scoreboard():
                    "indicator warming up.")
         return
 
-    price = latest_price(candles)
+    spot = _get_spot(candles)
+    price = spot.price
     sig = compute_signals(candles)
     state = classify(sig)
     market, market_err = _get_active_market()
 
-    stamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    st.caption(
-        f"Last updated {stamp} · refreshes every 15s (quotes cached up to 10s, BTC price up to 20s). "
-        "**This is a live read that updates all window long — the Telegram alert is a one-time "
-        "snapshot taken ~1-2 min after the window opens. Both use the same decision function, so "
-        "if they differ it's because the market moved since the alert fired, not because they disagree.**"
-    )
+    # Report the age of the PRICE THE MODEL ACTUALLY USED, not the render time.
+    # This caption used to print datetime.now() regardless, so a 5-minute-stale
+    # price was presented under a fresh timestamp -- exactly how two views ended
+    # up showing confident, opposite recommendations on 2026-08-06.
+    price_age = (datetime.now(timezone.utc) - spot.ts).total_seconds()
+    if spot.source == "ticker":
+        st.caption(
+            f"BTC price is **{price_age:.0f}s old** (Coinbase last trade, "
+            f"{spot.ts:%H:%M:%S} UTC) · refreshes every 15s. "
+            "**The Telegram alert is a one-time snapshot ~1-2 min after the window opens; "
+            "this read keeps updating. Same decision function, so any difference is the "
+            "market moving, not the two disagreeing.**"
+        )
+    else:
+        st.error(
+            f"⚠️ Live ticker unavailable — falling back to a **{price_age:.0f}s-old** 1-min "
+            f"candle close from {spot.ts:%H:%M:%S} UTC. Near an at-the-money strike a stale "
+            "price can land on the wrong side and flip the recommendation. Treat this read "
+            "as unreliable until the ticker recovers."
+        )
 
     with st.container(horizontal=True):
         st.metric("BTC-USD", f"${price:,.2f}", border=True)

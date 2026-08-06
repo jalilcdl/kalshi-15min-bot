@@ -106,7 +106,7 @@ import config
 import telegram_client
 import trade_log
 from alert_message import build_entry_alert, build_target_hit_alert, build_paper_entry_followup_alert
-from coinbase_feed import fetch_1min_candles, latest_price
+from coinbase_feed import fetch_1min_candles, fetch_spot_price
 from indicators import compute_signals
 from kalshi_feed import get_active_market, get_market_by_ticker
 from paper_trader import evaluate_trade
@@ -281,8 +281,13 @@ def check_entry_alert(alerted: dict[str, str]) -> bool:
               f"-- skipping late entry alert", flush=True)
         return True
 
-    candles = fetch_1min_candles()
-    price = latest_price(candles)
+    candles = fetch_1min_candles()      # volatility/indicator math only
+    spot = fetch_spot_price(candles)    # real-time price for the strike comparison
+    price = spot.price
+    if spot.source != "ticker":
+        age = (datetime.now(timezone.utc) - spot.ts).total_seconds()
+        print(f"[{_stamp()}] WARNING: ticker unavailable, alerting off a {age:.0f}s-old "
+              f"candle close ${price:,.2f}", flush=True)
     # Reuse these candles' vol -- evaluate_trade() would otherwise re-fetch the
     # same Coinbase data a second time within this one alert evaluation.
     decision = evaluate_trade(price, market, realized_vol_pct=compute_signals(candles).realized_vol_pct)

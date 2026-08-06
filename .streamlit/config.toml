@@ -3,3 +3,12 @@
 # them read consistently. base="dark" is Streamlit's built-in dark palette.
 [theme]
 base = "dark"
+
+# Pin this dashboard to a dedicated port so it never collides with another local
+# Streamlit app. Both kalshi-15min-bot and mlb-model ship a dashboard at
+# dashboard\app.py and, left unset, BOTH default to 8501 -- so whichever started
+# first owned localhost:8501 and the other launch just refocused that tab. This
+# bot's dashboard owns 8504 (mlb-model=8501, cfb-model=8502, nfl-model=8503 are
+# already taken by those dashboards' launch configs).
+[server]
+port = 8504
