@@ -4,11 +4,18 @@
 [theme]
 base = "dark"
 
-# Pin this dashboard to a dedicated port so it never collides with another local
-# Streamlit app. Both kalshi-15min-bot and mlb-model ship a dashboard at
-# dashboard\app.py and, left unset, BOTH default to 8501 -- so whichever started
-# first owned localhost:8501 and the other launch just refocused that tab. This
-# bot's dashboard owns 8504 (mlb-model=8501, cfb-model=8502, nfl-model=8503 are
-# already taken by those dashboards' launch configs).
-[server]
-port = 8504
+# DO NOT add a [server] port here. This file is committed and is read by BOTH
+# the local desktop runs AND the Streamlit Community Cloud deployment, and Cloud
+# manages the serving port itself. Pinning one made Cloud start uvicorn on 8504
+# while its supervisor health-checked the port it expected, so the deploy failed
+# with "The service has encountered an error while checking the health of the
+# Streamlit app" and the app showed "Oh no." (2026-08-06).
+#
+# The local collision this was working around is real -- kalshi-15min-bot and
+# mlb-model both ship dashboard/app.py and both default to 8501, so whichever
+# starts first owns it and the other launch just refocuses that tab -- but it is
+# a LOCAL-ONLY problem and belongs in the local launchers, not in shared
+# committed config. Both now pass the port explicitly:
+#     run_dashboard.bat     --server.port 8504
+#     .claude/launch.json   --server.port 8504
+# (mlb-model=8501, cfb-model=8502, nfl-model=8503.)
