@@ -35,6 +35,7 @@ from classifier import classify
 from coinbase_feed import fetch_1min_candles, fetch_range_1min, fetch_spot_price
 from indicators import compute_signals
 from kalshi_feed import get_active_market, get_settled_markets
+from model.crossing_probability import predict_flip_prob
 # THE shared entry-decision function -- also what bot.py's Telegram alerts use.
 # Deliberately not reimplemented here; see _model_read_card().
 from paper_trader import evaluate_trade
@@ -235,6 +236,43 @@ _SKIP_TEXT = {
 }
 
 
+def _flip_risk_badge(price, market, decision):
+    """How likely the read directly above this is to reverse before close.
+
+    Deliberately worded as "price closes back across strike", not "your read
+    flips": the model's label counts 1-min CLOSES on the far side, while this
+    page renders a real-time ticker, so a read can visibly wobble on a
+    sub-minute move the label never counted. The intra-bar variant of the label
+    runs ~7 points higher, so this number under-states apparent flipping and
+    the wording has to match what was actually validated.
+    See research/crossing_probability/README.md."""
+    p = predict_flip_prob(price, market.strike, decision.mins_remaining,
+                          decision.realized_vol)
+    if p is None:
+        return  # flat tape / no strike / window over -- say nothing rather than "0%"
+
+    # Three bands, so it reads at a glance. Thresholds are descriptive labels on
+    # a continuous number, not decision rules -- the percentage is the content.
+    if p >= 0.55:
+        colour, word = "red", "high"
+    elif p >= 0.30:
+        colour, word = "orange", "moderate"
+    else:
+        colour, word = "green", "low"
+
+    st.markdown(
+        f"Flip risk: :{colour}[**{p*100:.0f}%** ({word})]  \n"
+        f"<span style='opacity:0.7;font-size:0.85em'>chance price closes back across "
+        f"the strike before this window ends</span>",
+        unsafe_allow_html=True,
+        help="Validated separately from the settlement read above: 4,250 markets, "
+             "6 walk-forward folds, Brier 0.1716 / AUC 0.810, max decile calibration "
+             "gap 5.4 pts. Beats base-rate, time-only and the closed-form "
+             "reflection baselines at p<0.001. Counts 1-min closes on the far side, "
+             "so it slightly under-states brief intra-minute wobbles.",
+    )
+
+
 def _model_read_card(price, market, sig, mins_left):
     """Live model read, rendered straight off paper_trader.evaluate_trade() --
     the exact same call bot.py's Telegram alerts use.
@@ -267,6 +305,7 @@ def _model_read_card(price, market, sig, mins_left):
                   help="Live settlement probability from the validated distance+time+volatility "
                        "model. Updates every 15s for the full window, independent of whether "
                        "the entry gates currently allow a trade.")
+        _flip_risk_badge(price, market, decision)
         if decision.dist_over_reachable is not None:
             st.caption(f"P(YES) {decision.p_yes*100:.1f}%  ·  realized vol {decision.realized_vol:.3f}%  "
                        f"·  dist/reachable {decision.dist_over_reachable:.2f}  "
