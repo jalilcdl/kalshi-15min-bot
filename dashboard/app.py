@@ -426,9 +426,19 @@ def _live_scoreboard():
 
     with st.container(horizontal=True):
         st.metric("BTC-USD", f"${price:,.2f}", border=True)
+        # These two come from the SAME 7-indicator confluence engine as the votes
+        # panel below, so they carry the same caveat -- marking the panel but
+        # leaving these unmarked would half-defeat the point.
+        _CONFLUENCE_HELP = ("Chart context, not a prediction — from the 7-indicator "
+                            "confluence engine, which measured 44–48% directional accuracy "
+                            "over 15 min (worse than a coin flip). See the votes panel below.")
         st.metric("Market state", state.state, border=True,
-                   help=f"{state.trend_strength} trend · {state.momentum} momentum · {state.volatility} volatility")
-        st.metric("Confidence", f"{state.confidence}/7 ({state.confidence_band})", border=True)
+                   help=f"{state.trend_strength} trend · {state.momentum} momentum · "
+                        f"{state.volatility} volatility. {_CONFLUENCE_HELP}")
+        st.metric("Confidence", f"{state.confidence}/7 ({state.confidence_band})", border=True,
+                  help="Agreement among the 7 chart indicators — NOT a confidence in any "
+                       f"prediction. {_CONFLUENCE_HELP} The ≥6/7 filter tested *worse* than "
+                       "the unfiltered signal.")
         st.metric("15-min window move", f"{sig.window_delta_pct:+.2f}%", border=True)
 
     col_l, col_r = st.columns([3, 2])
@@ -455,7 +465,23 @@ def _live_scoreboard():
                 _model_read_card(price, market, sig, mins_left)
 
         with st.container(border=True):
-            st.markdown("**7-indicator votes**")
+            # CONTEXT PANEL, NOT A PREDICTION. This is the same 7-indicator
+            # confluence engine the TradingView Pine script draws (that script
+            # is a port OF this Python, not the other way round -- see
+            # kalshi_15m_indicator.pine's header). It is deliberately NOT given
+            # the visual weight of the model read or the flip-risk badge above,
+            # because unlike those two it is not merely unvalidated -- it was
+            # measured as actively worse than a coin flip. Do not promote it to
+            # a peer signal without new evidence that clears the same bar.
+            st.markdown("**7-indicator votes** — chart context, not a prediction")
+            st.caption(
+                ":orange[**Not a signal.**] Validated on 4,765 instances: entering on these "
+                "states won 44–48% of the time over the next 15 min — *worse* than a coin "
+                "flip (p<0.0001 to p=0.02), and the high-confidence filter (≥6/7) made it "
+                "**worse**, not better. Shown as a discretionary read of what the chart "
+                "indicators are doing. The model read and flip risk above are the validated "
+                "numbers."
+            )
             st.dataframe(_votes_table(sig), width="stretch", hide_index=True)
 
         if market is not None and market.yes_bid is not None and market.yes_ask is not None:
