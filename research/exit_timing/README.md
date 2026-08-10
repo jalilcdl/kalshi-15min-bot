@@ -97,6 +97,46 @@ more *often* than holding (78-87% vs. 67.6%) — but holding still comes out
 threshold tested. 35% was the best of the tested early-exit points, still
 ~1.5 percentage points of ROI behind just holding.
 
+### 4a. Corrected for the real fee model (Phase 0, 2026-08-10)
+
+The table above used a fee model that rounded up to the nearest **cent**;
+Kalshi rounds to **$0.0001** (see `fees.py`). The fee also gates *which*
+trades qualify (edge ≥ 3¢ is net of it), so the whole entry rule was replayed
+rather than the costs patched — `scripts/phase0_fee_sensitivity.py`. Rounding
+is genuinely ambiguous across Kalshi's own sources, so all three candidates
+were run, at the paper size (10) and the size real execution is scoped for (4):
+
+| Size | Fee model | Trades | ROI hold | ROI +35% exit |
+|---|---|---|---|---|
+| 10 | cent_total *(the table above)* | 2,790 | +12.36% | +10.87% |
+| 10 | **deci_milli *(correct)*** | 2,796 | **+12.53%** | **+11.04%** |
+| 10 | cent_per_ctr *(worst case)* | 2,762 | +11.52% | +9.53% |
+| 4 | cent_total | 2,787 | +12.39% | +10.78% |
+| 4 | **deci_milli *(correct)*** | 2,796 | **+12.53%** | **+11.03%** |
+| 4 | cent_per_ctr *(worst case)* | 2,762 | +11.52% | +9.53% |
+
+**The edge survives even the most expensive candidate** (+9.53% on the exit
+strategy, +11.52% held), so the residual rounding ambiguity does not change
+any conclusion here. Fees run ~2.8% of stake.
+
+Two things worth keeping:
+
+- **The hold-vs-exit gap is unchanged at ~1.5pp** — the correction lifts both
+  strategies equally. Holding still wins on dollars; the deployed +35% exit
+  remains a deliberate choice against the backtest optimum, not an oversight.
+- **Cent-rounding penalised small orders.** Under the old model, dropping
+  10 → 4 contracts cost 0.09pp of ROI purely to rounding (10.87% → 10.78%).
+  Under the correct model that penalty is 0.003pp. Size 4 is economically
+  neutral vs size 10 once fees are computed properly — which matters, since
+  4 is the cap scoped for real execution.
+
+Also verified from the API, not from prose: KXBTC15M is `fee_type="quadratic"`,
+`fee_multiplier=1`, with no fee changes scheduled. The enum's other value is
+`quadratic_with_maker_fees`, so **resting orders are fee-exempt on this
+series**. Our exit sells into the bid (taker) and pays 1–4% of proceeds;
+posting it as a resting limit order would pay zero, at the cost of fill risk.
+That is a real argument for a maker-style exit in a future execution design.
+
 **Why:** decomposed the trades that DID hit each target — of those, roughly
 **77-85% would have gone on to settle in the buyer's favor anyway** (the
 full $1.00 payout, not just the capped 20-40% gain — upside foregone by

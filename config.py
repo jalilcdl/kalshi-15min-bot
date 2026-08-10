@@ -89,13 +89,18 @@ STRIKE_SAFE_SIGMAS = 1.5    # |distance| beyond this many expected sigmas =
 FINAL_MINUTES_NOISY = 2     # avoid entries in the last N minutes of a window
 
 # --- Paper trading (paper_trader.py) -----------------------------------------
-# Kalshi's publicly documented standard taker fee: fee = ceil(0.07 * C * P * (1-P))
-# in dollars, C=contracts, P=price in dollars (0..1). This is a general-purpose
-# published rate, NOT verified against KXBTC15M specifically -- Kalshi's fee
-# schedule can vary by series and change over time. Treat as a documented
-# estimate, and cross-check against Kalshi's current fee schedule before
-# trusting the paper P&L as a precise real-dollar forecast.
+# Kalshi taker fee base rate. VERIFIED against KXBTC15M 2026-08-10 (Phase 0) --
+# the previous "not verified against KXBTC15M specifically" caveat is resolved.
 KALSHI_TAKER_FEE_RATE = 0.07
+
+# Series-specific multiplier, read straight from the API rather than inferred:
+#   GET /series/KXBTC15M                            -> fee_type="quadratic", fee_multiplier=1
+#   GET /series/fee_changes?series_ticker=KXBTC15M   -> [] (nothing scheduled)
+# So no crypto/15-min surcharge. The fee_type enum is
+# {quadratic, quadratic_with_maker_fees, flat} and this series is plain
+# "quadratic", i.e. resting/maker orders are fee-exempt here. Re-check those two
+# endpoints if anything changes; full reasoning in fees.py.
+KALSHI_FEE_MULTIPLIER = 1.0
 
 PAPER_TRADE_SIZE = 10        # contracts per simulated fill (flat, not confidence-scaled --
                             # same "flat stake" ethos as the sports models' bet trackers)
