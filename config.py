@@ -40,6 +40,29 @@ COINBASE_PRODUCT = "BTC-USD"
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_SERIES_TICKER = _env("KALSHI_SERIES_TICKER", "KXBTC15M")
 
+# --- Authenticated Kalshi access (kalshi_auth.py) ----------------------------
+# Read-only for now: balance / positions / fills. NOTHING here places orders.
+#
+# KALSHI_ENV defaults to "demo" ON PURPOSE. Production access must be an
+# explicit, deliberate opt-in -- never something you get by forgetting to set a
+# variable. The demo exchange is a separate host with separate credentials; a
+# demo key will NOT authenticate against production and vice versa.
+KALSHI_ENV = _env("KALSHI_ENV", "demo").strip().lower()
+KALSHI_API_BASES = {
+    "demo": "https://demo-api.kalshi.co/trade-api/v2",
+    "prod": "https://api.elections.kalshi.com/trade-api/v2",
+}
+KALSHI_TRADE_BASE = KALSHI_API_BASES.get(KALSHI_ENV, KALSHI_API_BASES["demo"])
+
+# Credentials, same env-var pattern as TELEGRAM_BOT_TOKEN. Jalil generates these
+# himself in Kalshi's UI; nothing in this repo creates, requests, or stores them.
+#   KALSHI_API_KEY_ID        the Key ID string shown next to the generated key
+#   KALSHI_PRIVATE_KEY_PATH  path to the downloaded RSA private key (.pem)
+# The .pem is gitignored (*.pem). Kalshi displays the private key exactly once
+# and cannot re-issue it -- if it is lost, revoke the key and generate a new one.
+KALSHI_API_KEY_ID = _env("KALSHI_API_KEY_ID", "")
+KALSHI_PRIVATE_KEY_PATH = _env("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
+
 # How many 1-min bars to keep in memory / request per refresh.
 # 300 bars = 5 hours: enough for EMA63 warmup plus volume baselines.
 LOOKBACK_BARS = 300

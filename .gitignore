@@ -17,6 +17,14 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 
+# Kalshi API private keys. The RSA private key signs TRADING requests -- anyone
+# holding it can place orders on the account. Kalshi shows it exactly once at
+# generation and cannot re-issue it, so a leaked key means revoke + regenerate.
+# Never commit one, in any environment, demo included.
+*.pem
+*.key
+kalshi_private_key*.txt
+
 # Logs -- regenerable, and paper_trader.log / bot.log grow unbounded.
 *.log
 
