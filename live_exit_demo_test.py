@@ -231,7 +231,15 @@ def main():
 
     print("\n" + "=" * 74)
     ok_flat = final == 0
-    ok_multi = len(exit_orders) > 1
+    # Persistence can only be OBSERVED when the book is thinner than the
+    # position -- if depth covers the whole size, one order is the correct and
+    # best outcome, not a failure. Demanding >1 order unconditionally made this
+    # test report FAIL on a run where the exit worked perfectly (15 of 15 in a
+    # single fill). The real invariant is: every partial fill must be followed
+    # up until flat or a breaker is recorded.
+    partial_or_zero = [r for r in exit_orders
+                       if r["status"] == "partial" or f(r.get("fill_count")) == 0]
+    ok_multi = (len(exit_orders) > 1) if partial_or_zero else (len(exit_orders) >= 1)
     st = session.get("exiting", {}).get(tkr, {})
     ok_breaker = bool(st.get("gave_up"))
     if FLOOR_MODE:
@@ -244,8 +252,10 @@ def main():
         print(f"[{'PASS' if gv else 'FAIL'}] recorded why it refused ({gv})")
         print("RESULT:", "PASS" if (floor_ok and gv) else "FAIL")
         return 0 if (floor_ok and gv) else 1
-    print(f"[{'PASS' if ok_multi else 'FAIL'}] exit persisted across more than one order "
-          f"({len(exit_orders)} exit orders)")
+    print(f"[{'PASS' if ok_multi else 'FAIL'}] exit followed through "
+          f"({len(exit_orders)} order(s); "
+          f"{len(partial_or_zero)} needed a follow-up, "
+          f"{'thin book -- persistence exercised' if partial_or_zero else 'book covered the full size in one fill'})")
     print(f"[{'PASS' if ok_flat or ok_breaker else 'FAIL'}] ended flat, or stopped for a "
           f"recorded reason (flat={ok_flat}, gave_up={st.get('gave_up')})")
     print(f"[{'PASS' if len(partials) or len(zeros) else 'INFO'}] real partial/zero fills "
