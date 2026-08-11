@@ -118,28 +118,50 @@ def main():
                 print(f"  bot {kind}: side={r['side']} count={r['count']} px={r['price']} "
                       f"fill={r['fill_count']} avg_fill={r['avg_fill_price'] or '-'} "
                       f"fee={r['fee_paid'] or '-'}")
+    # Closed-but-NOT-YET-SETTLED positions live in NEITHER the settlements feed
+    # nor as an open position -- they sit in /positions with position_fp 0 and a
+    # populated realized_pnl. Omitting them made this audit report a false $1.61
+    # "mismatch" against a trader that was in fact exactly right. An audit has to
+    # cover the same ground as the thing it audits.
+    open_realised = 0.0
+    for m in (kalshi_auth._request("/portfolio/positions",
+              params={"settlement_status": "unsettled"}).get("market_positions") or []):
+        contrib = _f(m.get("realized_pnl_dollars")) - _f(m.get("fees_paid_dollars"))
+        if abs(contrib) > 1e-9:
+            print("")
+            print(f"{m.get('ticker')}   [CLOSED, AWAITING SETTLEMENT]")
+            print(f"  exchange realized ${_f(m.get('realized_pnl_dollars')):+.4f}"
+                  f" - fees ${_f(m.get('fees_paid_dollars')):.4f} = ${contrib:+.4f}")
+            open_realised += contrib
+    total_exch += open_realised
 
-    print("\n" + "=" * 78)
+    print("")
+    print("=" * 78)
     print(f"settlements examined      {len(settlements)}")
     print(f"  traded by the bot       {n_bot_traded}")
     print(f"  completed round trips   {n_trips}")
-    print(f"EXCHANGE-BOOKED P&L       ${total_exch:+.4f}")
+    print(f"EXCHANGE-BOOKED P&L       ${total_exch:+.4f}"
+          f"  (settled + closed-awaiting-settlement)")
 
-    # What the running session believes, for comparison.
     sess = Path(__file__).parent / "data" / "live_session.json"
     if sess.exists():
         import json
         s = json.loads(sess.read_text())
-        print(f"session file says         ${_f(s.get('realized_pnl')):+.4f} "
+        said = _f(s.get("realized_pnl"))
+        print(f"session file says         ${said:+.4f} "
               f"(date {s.get('utc_date')}, entries {s.get('entries')} exits {s.get('exits')})")
-        if not all_days and abs(_f(s.get("realized_pnl")) - total_exch) > 0.01:
-            print(f"  *** MISMATCH: session vs exchange differ by "
-                  f"${abs(_f(s.get('realized_pnl')) - total_exch):.4f} ***")
-            mismatches.append(("session", "session P&L != exchange-booked P&L"))
+        if not all_days:
+            diff = abs(said - total_exch)
+            if diff > 0.01:
+                print(f"  *** MISMATCH: session vs exchange differ by ${diff:.4f} ***")
+                mismatches.append(("session", "session P&L != exchange-booked P&L"))
+            else:
+                print(f"  session matches exchange to ${diff:.4f}")
 
-    print(f"\nRECONCILIATION: {'ALL CONSISTENT' if not mismatches else 'PROBLEMS FOUND'}")
-    for t, why in mismatches:
-        print(f"  {t}: {why}")
+    print("")
+    print(f"RECONCILIATION: {'ALL CONSISTENT' if not mismatches else 'PROBLEMS FOUND'}")
+    for tk, why in mismatches:
+        print(f"  {tk}: {why}")
     return 1 if mismatches else 0
 
 
