@@ -54,9 +54,15 @@ def kalshi_fee(contracts: float, price_dollars: float,
     Quadratic in price: peaks at P=0.50 (maximum uncertainty), goes to zero as
     P approaches 0 or 1. Matches the series' declared fee_type="quadratic".
 
-    Returns the TAKER fee. Resting/maker orders on KXBTC15M are fee-exempt
-    (see module docstring) -- this function does not model that case, because
-    nothing in this project posts resting orders yet.
+    Returns the TAKER fee. Resting/maker orders on KXBTC15M are fee-exempt --
+    CONFIRMED EMPIRICALLY 2026-08-11, not just inferred from the fee_type enum:
+    a resting sell on demo was partially lifted (is_taker=false) and Kalshi
+    charged exactly $0.000000 where this function would have predicted $0.0138.
+
+    So callers MUST NOT apply this to a maker fill. Check the fill's is_taker
+    flag; if false, the fee is zero. Both real TAKER fills matched this function
+    to the cent-fraction ($0.062000 and $0.025200, diff $0.00000000), so the
+    Phase 0 rounding fix is validated against ground truth.
     """
     price_dollars = min(max(price_dollars, 0.0), 1.0)
     raw = config.KALSHI_TAKER_FEE_RATE * fee_multiplier * contracts * price_dollars * (1.0 - price_dollars)

@@ -234,8 +234,14 @@ def place_order(ticker: str, side: str, count: int, price: float,
 
 
 def cancel_order(order_id: str) -> dict:
+    """Cancel a resting order.
+
+    Path is the V2 one. DELETE /portfolio/orders/{id} is the v1 endpoint and
+    returns 410 deprecated_v1_order_endpoint -- found the hard way in Phase 2b,
+    where a resting order could not be cancelled and was left on the book.
+    """
     _require_demo()
-    sc, body = _delete(f"/portfolio/orders/{order_id}")
+    sc, body = _delete(f"{ORDER_PATH}/{order_id}")
     return {"http": sc, "ok": sc in (200, 201, 204), "raw": body}
 
 
@@ -243,6 +249,47 @@ def get_resting_orders() -> list[dict]:
     """Open orders per the exchange (not the local log)."""
     data = kalshi_auth._request("/portfolio/orders", params={"status": "resting"})
     return data.get("orders", []) or []
+
+
+def refresh_order_status(client_order_id: str) -> dict | None:
+    """Re-read a resting order from the exchange and update the local row.
+
+    place_order() classifies from the IMMEDIATE response, which is terminal for
+    IOC/FOK but NOT for good_till_canceled: a resting order can fill later and
+    the local status then goes stale. Observed directly in Phase 2b -- a resting
+    sell of 4 sat at fill=0 for 24s, then the market maker lifted 1, leaving the
+    local log still saying "resting" while the exchange said 1 of 4 filled.
+
+    Anything long-lived that rests orders must call this (or reconcile()) rather
+    than trusting what place_order returned at submit time.
+    """
+    row = find_by_client_id(client_order_id)
+    if not row or not row.get("order_id"):
+        return None
+    for o in get_resting_orders():
+        if o.get("order_id") != row["order_id"]:
+            continue
+        filled = float(o.get("fill_count_fp") or 0)
+        remaining = float(o.get("remaining_count_fp") or 0)
+        want = float(row.get("count") or 0)
+        status = ("filled" if filled >= want > 0 else
+                  "partial" if filled > 0 else "resting")
+        _update(client_order_id, status=status, fill_count=f"{filled:.2f}",
+                remaining_count=f"{remaining:.2f}")
+        return {"status": status, "fill_count": filled, "remaining_count": remaining}
+    # Not resting any more: it either filled completely or was cancelled. The
+    # fills endpoint is authoritative for which.
+    fills = kalshi_auth.get_fills(limit=50, ticker=row["ticker"])
+    matched = sum(float(f.get("count_fp") or 0)
+                  for f in fills if f.get("order_id") == row["order_id"])
+    if matched > 0:
+        want = float(row.get("count") or 0)
+        _update(client_order_id, status="filled" if matched >= want else "partial",
+                fill_count=f"{matched:.2f}", remaining_count="0.00")
+        return {"status": "filled" if matched >= want else "partial",
+                "fill_count": matched, "remaining_count": 0.0}
+    _update(client_order_id, status="cancelled", remaining_count="0.00")
+    return {"status": "cancelled", "fill_count": 0.0, "remaining_count": 0.0}
 
 
 # --- reconciliation ----------------------------------------------------------
@@ -261,16 +308,55 @@ def reconcile() -> dict:
 
     local_filled = [r for r in local if r["status"] in ("filled", "partial")]
     local_unknown = [r for r in local if r["status"] in ("unknown", "sending")]
-    exch_tickers = {p.get("ticker") for p in positions if p.get("position")}
+    # Field names are the API's real ones, confirmed against a live payload in
+    # Phase 2b: position_fp / market_exposure_dollars / fees_paid_dollars.
+    # An earlier guess at "position"/"market_exposure" silently read None for
+    # every field, which made a real 4-contract position look like no position
+    # at all -- exactly the drift reconciliation exists to catch.
+    exch_tickers = {p.get("ticker") for p in positions
+                    if float(p.get("position_fp") or 0) != 0}
     local_tickers = {r["ticker"] for r in local_filled}
 
+    # Drift in EITHER direction is drift. An exchange position the log cannot
+    # explain is the dangerous one (an order filled that we lost track of), but
+    # a logged fill with no position is also wrong unless it settled, so both
+    # are surfaced and both clear in_sync.
+    orphan_positions = sorted(exch_tickers - local_tickers)
+    # A logged fill with no open position is EXPECTED once that market settles:
+    # get_positions() asks for unsettled only, so settled markets drop out. Only
+    # count it as drift if the market is still open. Without this the reconciler
+    # cries drift on every trade that reaches expiry, which would train whoever
+    # reads it to ignore the one signal that matters.
+    orphan_fills = []
+    for tkr in sorted(local_tickers - exch_tickers):
+        try:
+            m = requests.get(f"{config.KALSHI_TRADE_BASE}/markets/{tkr}",
+                             timeout=15).json().get("market", {})
+            if m.get("status") in ("active", "initialized"):
+                orphan_fills.append(tkr)
+        except Exception:
+            orphan_fills.append(tkr)   # can't prove it settled -> treat as drift
     return {
         "exchange_positions": positions,
         "exchange_resting_orders": len(resting),
         "local_rows": len(local),
         "local_filled_or_partial": len(local_filled),
         "local_unresolved": len(local_unknown),
-        "positions_not_in_local_log": sorted(exch_tickers - local_tickers),
-        "local_fills_without_position": sorted(local_tickers - exch_tickers),
-        "in_sync": not (exch_tickers - local_tickers) and not local_unknown,
+        "positions_not_in_local_log": orphan_positions,
+        "local_fills_without_position": orphan_fills,
+        "in_sync": not orphan_positions and not orphan_fills and not local_unknown,
     }
+
+
+def position_summary() -> list[dict]:
+    """Positions with the API's real field names decoded to plain numbers."""
+    out = []
+    for p in kalshi_auth.get_positions():
+        out.append({
+            "ticker": p.get("ticker"),
+            "contracts": float(p.get("position_fp") or 0),
+            "exposure": float(p.get("market_exposure_dollars") or 0),
+            "fees_paid": float(p.get("fees_paid_dollars") or 0),
+            "realized_pnl": float(p.get("realized_pnl_dollars") or 0),
+        })
+    return out
