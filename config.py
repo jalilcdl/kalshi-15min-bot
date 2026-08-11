@@ -85,15 +85,23 @@ LIVE_TRADE_SIZE = 25
 # would strand capital in exactly the scenario the cap exists to protect
 # against). Resets at 00:00 UTC.
 #
-# $20 chosen deliberately, not arbitrarily. Worst case per trade is
-# 4 contracts x $1.00 = $4 lost if a position settles worthless, so $20 is ~5
-# maximum-loss trades. At the strategy's validated ~75% target-hit rate, five
-# max-loss trades in one day is far outside ordinary variance and reads as
-# "something is wrong" (model drift, a bad feed, a market regime the model was
-# never fitted on) rather than a bad run. It is also ~20% of the funded demo
-# balance, so it trips well before the account is meaningfully damaged. Revisit
-# once real per-day P&L variance has been observed rather than assumed.
-LIVE_DAILY_LOSS_CAP = 20.00
+# Raised 20 -> 50 on 2026-08-11, when LIVE_MAX_CONTRACTS went 4 -> 25.
+#
+# The old $20 was reasoned from 4-contract sizing: worst case per trade is
+# 4 x $1.00 = $4 if a position settles worthless, so $20 was ~5 maximum-loss
+# trades -- far outside ordinary variance at the strategy's validated ~75%
+# target-hit rate, and therefore a genuine "something is wrong" signal rather
+# than a bad run. At 25 contracts that reasoning inverts: one position settling
+# worthless is $25, so a $20 cap would be tripped by a SINGLE losing trade. A
+# cap that fires on one ordinary loss is not a risk control, it is an outage --
+# it would halt the bot before it had produced enough trades to reveal anything.
+#
+# $50 restores the original intent at the new size: two maximum-loss trades, or
+# a larger number of partial losses, while still tripping at half the ~$100 demo
+# balance -- well before the account is meaningfully damaged. Revisit once real
+# per-day P&L variance at 25 contracts has been OBSERVED rather than assumed;
+# that is the number this should ultimately be derived from.
+LIVE_DAILY_LOSS_CAP = 50.00
 
 # Kill switch. If this file EXISTS, no new entries are opened -- checked every
 # cycle, before anything else. A filesystem check on purpose: it must work when
