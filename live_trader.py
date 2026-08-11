@@ -457,6 +457,12 @@ def run_cycle(session: dict) -> dict:
             else:
                 px = order_px
             if not (0.0 < px < 1.0):
+                # Same lesson as the holding-silence fix: a sweep that stops
+                # without saying why leaves the log showing "attempt 2 filled 10
+                # of 15" with no account of the third sweep, and an operator
+                # cannot tell an empty book from a bug.
+                log(f"  exit sweep {sweep+1} {tkr}: no usable price on the book "
+                    f"({px}) -- stopping sweeps this cycle, {remaining:.0f} left")
                 break
 
             # RE-CHECK THE GUARDS ON EVERY SWEEP, AGAINST THE FRESH PRICE.
