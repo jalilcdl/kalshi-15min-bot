@@ -166,6 +166,24 @@ def run_cycle(session: dict) -> dict:
             log(f"cancelled stale resting entry {o['order_id'][:8]} on {row['ticker']} "
                 f"(window no longer tradeable) ok={c['ok']}")
 
+    # SESSION P&L FROM THE EXCHANGE, not from local arithmetic.
+    # Local accumulation was wrong once already (claimed +$0.76 on a trade the
+    # exchange booked at -$0.32), and a loss cap driven by a number the bot
+    # computes for itself is a cap that cannot be trusted to fire. Sum the
+    # exchange's own realized_pnl and fees for today's tickers instead.
+    try:
+        booked = kalshi_auth._request("/portfolio/positions",
+                                      params={"settlement_status": "all"})
+        realised = sum(_f(m.get("realized_pnl_dollars")) - _f(m.get("fees_paid_dollars"))
+                       for m in booked.get("market_positions", []) or [])
+        if abs(realised - session["realized_pnl"]) > 0.005:
+            log(f"session P&L corrected from local {session['realized_pnl']:+.4f} "
+                f"to exchange-booked {realised:+.4f}")
+        session["realized_pnl"] = realised
+    except Exception as exc:
+        log(f"could not read exchange P&L ({exc}); loss cap is running on local "
+            f"arithmetic this cycle")
+
     rec = ex.reconcile()
     if not rec["in_sync"]:
         log(f"DRIFT: positions_not_in_log={rec['positions_not_in_local_log']} "
@@ -186,32 +204,56 @@ def run_cycle(session: dict) -> dict:
         avg_cost = abs(p["exposure"]) / abs(contracts) if contracts else 0.0
         if avg_cost <= 0:
             continue
-        if contracts > 0:                       # long YES -> sell into the yes bid
-            exit_px = _f(q.get("yes_bid_dollars"))
+        # UNITS. avg_cost is in the units of the position we HOLD: YES-price for
+        # a long, NO-price for a short (exposure/contracts from the exchange).
+        # The GAIN must be computed in those same units, but the ORDER PRICE is
+        # ALWAYS quoted in YES terms. Conflating the two is a real bug that
+        # already cost money on 2026-08-11: a short's exit passed the NO-terms
+        # value (0.72) straight through as the order price, i.e. "buy YES at up
+        # to 0.72" when the ask was ~0.55. It crossed and filled far worse than
+        # intended, turning a supposed +35.8% into a realised LOSS.
+        if contracts > 0:                       # long YES: value at the yes bid
+            value_px = _f(q.get("yes_bid_dollars"))   # in YES terms
+            order_px = value_px                       # sell YES at the bid
             side = "ask"
-        else:                                   # short YES (long NO) -> buy back at the ask
-            exit_px = 1.0 - _f(q.get("yes_ask_dollars"))
+        else:                                   # short YES (== long NO)
+            yes_ask = _f(q.get("yes_ask_dollars"))
+            value_px = 1.0 - yes_ask                  # in NO terms (the no bid)
+            order_px = yes_ask                        # buy YES back at the ask
             side = "bid"
-        if exit_px <= 0:
+        if value_px <= 0 or not (0.0 < order_px < 1.0):
             continue
-        gain = (exit_px - avg_cost) / avg_cost
+        gain = (value_px - avg_cost) / avg_cost
         log(f"position {p['ticker']} {contracts:+.0f} @ avg {avg_cost:.4f} "
-            f"exit_px={exit_px:.4f} gain={gain*100:+.1f}% "
+            f"value_px={value_px:.4f} gain={gain*100:+.1f}% "
             f"(target +{config.PAPER_TRADE_EXIT_TARGET*100:.0f}%)")
         if gain >= config.PAPER_TRADE_EXIT_TARGET:
             n = int(min(abs(contracts), config.LIVE_MAX_CONTRACTS))
-            log(f"EXIT TARGET HIT -> selling {n} of {p['ticker']} at {exit_px:.4f}")
-            r = ex.place_order(p["ticker"], side, n, exit_px,
+            log(f"EXIT TARGET HIT -> closing {n} of {p['ticker']} "
+                f"side={side} order_px={order_px:.4f} (value {value_px:.4f})")
+            r = ex.place_order(p["ticker"], side, n, order_px,
                                time_in_force="immediate_or_cancel",
                                note=f"phase3 exit +{gain*100:.0f}%")
             log(f"  exit order: status={r['status']} fill={r.get('fill_count')} "
-                f"err={str(r.get('error'))[:100]}")
+                f"avg_fill={r.get('avg_fill_price')} err={str(r.get('error'))[:100]}")
             if r["status"] in ("filled", "partial"):
                 filled = float(r.get("fill_count") or 0)
-                pnl = (exit_px - avg_cost) * filled
-                session["realized_pnl"] += pnl
+                # P&L from the ACTUAL fill price, never the intended one. The
+                # same incident reported +$0.76 off the intended price while the
+                # exchange recorded -$0.32 from the real fill.
+                avg_fill = _f(r.get("avg_fill_price"), None)
+                if avg_fill is None or avg_fill <= 0:
+                    realised_value = value_px          # fall back, and say so
+                    log("  WARNING: no avg_fill_price returned; P&L uses the "
+                        "quoted value and may be wrong -- trust reconcile()")
+                else:
+                    # avg_fill is YES-terms; convert to the position's units.
+                    realised_value = avg_fill if contracts > 0 else 1.0 - avg_fill
+                pnl = (realised_value - avg_cost) * filled
+                fee = _f(r.get("fee_paid")) * filled
+                session["realized_pnl"] += pnl - fee
                 session["exits"] += 1
-                log(f"  realized {pnl:+.4f}  session P&L {session['realized_pnl']:+.4f}")
+                log(f"  realised {pnl:+.4f} minus fee {fee:.4f} = {pnl-fee:+.4f}; session P&L {session['realized_pnl']:+.4f}")
 
     # 3. ENTRY -- gated by kill switch and loss cap.
     allowed, why = entries_allowed(session)
@@ -228,9 +270,17 @@ def run_cycle(session: dict) -> dict:
     held = {p["ticker"] for p in positions if p["contracts"] != 0}
     if market.ticker in held:
         return session
-    if any(r["ticker"] == market.ticker and r["status"] in ("filled", "partial")
+    # "resting" MUST be in this set. Without it a GTC entry that has not filled
+    # yet does not count as "already traded", so the next cycle stacks a SECOND
+    # 4-contract order on the same window -- 8 contracts of exposure while every
+    # individual order still respects LIVE_MAX_CONTRACTS. Same hole the
+    # duplicate-process incident exposed: a per-ORDER cap does not bound total
+    # exposure. Observed live 2026-08-11 and skipped only by luck (the second
+    # attempt hit an unusable quote).
+    if any(r["ticker"] == market.ticker
+           and r["status"] in ("filled", "partial", "resting", "sending", "unknown")
            for r in ex.load_orders()):
-        return session                      # already traded this window
+        return session                      # already traded, or trying to, this window
 
     candles = fetch_1min_candles()
     spot = fetch_spot_price(candles)
@@ -366,6 +416,10 @@ if __name__ == "__main__":
     # SINGLE INSTANCE. Two traders each honour LIVE_MAX_CONTRACTS individually
     # while together doubling account exposure, and client_order_id cannot see
     # across processes. This happened for real on 2026-08-11.
+    # --status is READ-ONLY and must work while the trader is running -- that is
+    # exactly when you want to inspect it. Only the trading loop takes the lock.
+    if "--status" in sys.argv:
+        sys.exit(main())
     try:
         with SingleInstance("live_trader"):
             sys.exit(main())
