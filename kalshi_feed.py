@@ -11,6 +11,7 @@ Note: early in a window floor_strike can be unset ("Target price: TBD")
 until the open-print average is published; we return None for strike then.
 """
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -75,10 +76,38 @@ def _to_market(m: dict) -> KalshiMarket:
     )
 
 
+def _get(url: str, params: dict | None = None, timeout: int = 15,
+         retries: int = 4):
+    """GET with retry on transient failures. Use this for every call in this
+    module rather than _session.get directly.
+
+    Written after a SWEEP rather than after an incident. Four separate retry
+    fixes shipped on 2026-08-11 -- kalshi_auth._request, live_trader.
+    market_quote, live_executor._post and then _delete -- each one added only
+    after that specific call failed in production. Auditing every outbound call
+    at once then found get_active_market() still bare, which is the most-called
+    network function in the live loop: live_trader hits it twice per cycle, and
+    an unhandled ConnectionError there aborts the whole cycle.
+    """
+    for attempt in range(retries):
+        try:
+            resp = _session.get(url, params=params, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == retries - 1:
+                raise
+            time.sleep(0.4 * (2 ** attempt) + 0.5)
+            continue
+        if (resp.status_code == 429 or resp.status_code >= 500) and attempt < retries - 1:
+            time.sleep(0.4 * (2 ** attempt) + 0.5)
+            continue
+        return resp
+    return resp
+
+
 def get_market_by_ticker(ticker: str) -> KalshiMarket | None:
     """Look up a single market by ticker -- used to resolve individual pending
     paper trades without re-pulling a whole settled-markets range each time."""
-    resp = _session.get(f"{config.KALSHI_BASE}/markets/{ticker}", timeout=15)
+    resp = _get(f"{config.KALSHI_BASE}/markets/{ticker}", timeout=15)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
@@ -137,7 +166,7 @@ def get_candlesticks(ticker: str, start_ts: int, end_ts: int,
 
 def get_active_market() -> KalshiMarket | None:
     """Return the currently-trading 15-min BTC market (nearest close), or None."""
-    resp = _session.get(
+    resp = _get(
         f"{config.KALSHI_BASE}/markets",
         params={"series_ticker": config.KALSHI_SERIES_TICKER,
                 "status": "open", "limit": 20},
