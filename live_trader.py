@@ -167,22 +167,40 @@ def run_cycle(session: dict) -> dict:
                 f"(window no longer tradeable) ok={c['ok']}")
 
     # SESSION P&L FROM THE EXCHANGE, not from local arithmetic.
+    #
     # Local accumulation was wrong once already (claimed +$0.76 on a trade the
-    # exchange booked at -$0.32), and a loss cap driven by a number the bot
-    # computes for itself is a cap that cannot be trusted to fire. Sum the
-    # exchange's own realized_pnl and fees for today's tickers instead.
+    # exchange booked at -$0.32). But reading /portfolio/positions is ALSO wrong:
+    # once a market SETTLES the position disappears from that endpoint entirely
+    # -- all/settled/unsettled every return nothing -- so the day's losses reset
+    # to zero on every settlement and a daily loss cap could never accumulate or
+    # fire. Verified: it logged "corrected ... to exchange-booked +0.0000" for a
+    # day that had really lost money.
+    #
+    # Settled P&L lives in /portfolio/settlements instead:
+    #     revenue = (winning side count) * $1.00
+    #     pnl     = revenue - (yes_total_cost + no_total_cost) - fee_cost
+    # That formula reproduces the exchange's own -0.3200 / -0.3893 exactly.
+    # Open positions still contribute their realized_pnl from /positions.
     try:
-        booked = kalshi_auth._request("/portfolio/positions",
-                                      params={"settlement_status": "all"})
-        realised = sum(_f(m.get("realized_pnl_dollars")) - _f(m.get("fees_paid_dollars"))
-                       for m in booked.get("market_positions", []) or [])
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        realised = 0.0
+        settle = kalshi_auth._request("/portfolio/settlements", params={"limit": 200})
+        for s in settle.get("settlements", []) or []:
+            if not str(s.get("settled_time", "")).startswith(today):
+                continue
+            yc, nc = _f(s.get("yes_count_fp")), _f(s.get("no_count_fp"))
+            cost = _f(s.get("yes_total_cost_dollars")) + _f(s.get("no_total_cost_dollars"))
+            revenue = (yc if s.get("market_result") == "yes" else nc) * 1.0
+            realised += revenue - cost - _f(s.get("fee_cost"))
+        for m in (kalshi_auth._request("/portfolio/positions",
+                  params={"settlement_status": "unsettled"}).get("market_positions") or []):
+            realised += _f(m.get("realized_pnl_dollars")) - _f(m.get("fees_paid_dollars"))
         if abs(realised - session["realized_pnl"]) > 0.005:
-            log(f"session P&L corrected from local {session['realized_pnl']:+.4f} "
-                f"to exchange-booked {realised:+.4f}")
+            log(f"session P&L {session['realized_pnl']:+.4f} -> exchange-booked {realised:+.4f}")
         session["realized_pnl"] = realised
     except Exception as exc:
-        log(f"could not read exchange P&L ({exc}); loss cap is running on local "
-            f"arithmetic this cycle")
+        log(f"could not read exchange P&L ({exc}); loss cap running on the last "
+            f"known value {session['realized_pnl']:+.4f} this cycle")
 
     rec = ex.reconcile()
     if not rec["in_sync"]:
