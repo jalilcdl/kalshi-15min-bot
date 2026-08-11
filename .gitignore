@@ -90,3 +90,7 @@ desktop.ini
 # live_trader stdout/stderr redirect targets (runtime logs)
 live_run.log
 live_run.err
+
+# diagnostic + backup artefacts (contain live account state)
+data/balance_diagnostic.json
+data/*.bak

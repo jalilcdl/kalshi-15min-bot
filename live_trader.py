@@ -414,7 +414,11 @@ def run_cycle(session: dict) -> dict:
                 continue
             state = exiting[tkr] = {"started": _stamp(), "attempts": 0,
                                     "gain_at_decision": gain,
-                                    "contracts_at_decision": abs(contracts)}
+                                    "contracts_at_decision": abs(contracts),
+                                    # the position's value AT the moment we
+                                    # decided -- the reference every later sweep
+                                    # measures adverse movement against
+                                    "trigger_value": value_px}
             log(f"EXIT TARGET HIT {tkr}: gain {gain*100:+.1f}% on "
                 f"{abs(contracts):.0f} contract(s) -- COMMITTING to exit, will work "
                 f"the remainder down until flat")
@@ -425,6 +429,9 @@ def run_cycle(session: dict) -> dict:
         state["attempts"] = state.get("attempts", 0) + 1
         remaining = abs(contracts)
         got_total = 0.0
+        # Reference for the within-cycle adverse-move guard below: what the
+        # position was worth when this cycle's sweeps began.
+        cycle_ref_value = value_px
         for sweep in range(config.EXIT_SWEEPS_PER_CYCLE):
             if remaining <= 0:
                 break
@@ -436,6 +443,52 @@ def run_cycle(session: dict) -> dict:
             else:
                 px = order_px
             if not (0.0 < px < 1.0):
+                break
+
+            # RE-CHECK THE GUARDS ON EVERY SWEEP, AGAINST THE FRESH PRICE.
+            #
+            # Checking them once per cycle was a real, costly hole. On
+            # 2026-08-11 a committed exit swept three times in six seconds; the
+            # ask went 0.47 -> 0.90 between sweep 1 and sweep 2, and the bot
+            # bought back at 0.90 a position that cost 0.44 -- realising -$1.70
+            # on 5 contracts. The floor was supposed to prevent exactly that and
+            # never got consulted, because it had been evaluated once at the top
+            # of the cycle against a price that no longer existed.
+            sweep_value = px if contracts > 0 else 1.0 - px
+            sweep_gain = (sweep_value - avg_cost) / avg_cost
+
+            # (i) the floor, now enforced per order rather than per cycle
+            if sweep_gain < config.EXIT_COMMIT_FLOOR:
+                _give_up(f"sweep {sweep+1}: gain {sweep_gain*100:+.0f}% fell below "
+                         f"the {config.EXIT_COMMIT_FLOOR*100:+.0f}% floor mid-exit")
+                break
+
+            # (ii) a bound on how far price may run against us WITHIN one cycle.
+            #
+            # The within-cycle/across-cycle distinction is the whole point, and
+            # getting it wrong breaks one fix or the other:
+            #
+            #   ACROSS cycles, a dip is normal and must be ridden. 0.62 -> 0.45
+            #   over several cycles is a 17c move and is exactly the case the
+            #   persistence fix exists to survive -- the floor governs there,
+            #   and nothing else should.
+            #
+            #   WITHIN a cycle, sweeps are seconds apart. A large move over
+            #   seconds is not a dip, it is the book repricing faster than we can
+            #   react -- 0.47 -> 0.90 in six seconds on 2026-08-11. Firing the
+            #   next order into that is chasing, not executing.
+            #
+            # So this measures against the value at the START OF THIS CYCLE, not
+            # against the original commitment, and it only stops THIS cycle's
+            # sweeps. It is not a give-up: next cycle re-reads the book, and if
+            # the market has settled at a level that still clears the floor, the
+            # exit carries on there. Only the floor ends a commitment for good.
+            drift = cycle_ref_value - sweep_value
+            if drift > config.EXIT_MAX_ADVERSE_MOVE:
+                log(f"  exit sweep {sweep+1} {tkr}: price moved {drift*100:.0f}c "
+                    f"within this cycle ({cycle_ref_value:.2f} -> {sweep_value:.2f}, "
+                    f"limit {config.EXIT_MAX_ADVERSE_MOVE*100:.0f}c) -- pausing "
+                    f"sweeps, will re-assess next cycle")
                 break
             n = int(min(remaining, config.LIVE_MAX_CONTRACTS))
             r = ex.place_order(tkr, side, n, px, time_in_force="immediate_or_cancel",
@@ -488,17 +541,31 @@ def run_cycle(session: dict) -> dict:
     held = {p["ticker"] for p in positions if p["contracts"] != 0}
     if market.ticker in held:
         return session
-    # "resting" MUST be in this set. Without it a GTC entry that has not filled
-    # yet does not count as "already traded", so the next cycle stacks a SECOND
-    # 4-contract order on the same window -- 8 contracts of exposure while every
-    # individual order still respects LIVE_MAX_CONTRACTS. Same hole the
-    # duplicate-process incident exposed: a per-ORDER cap does not bound total
-    # exposure. Observed live 2026-08-11 and skipped only by luck (the second
-    # attempt hit an unusable quote).
-    if any(r["ticker"] == market.ticker
-           and r["status"] in ("filled", "partial", "resting", "sending", "unknown")
+    # ONE ENTRY ATTEMPT PER WINDOW. Any prior entry order on this ticker, in ANY
+    # terminal or in-flight state, closes the window for good.
+    #
+    # This deliberately blocks retries. The narrower set (filled/partial/resting/
+    # sending/unknown) let a no_fill, rejected or cancelled attempt be retried on
+    # the next cycle, and that really happened: KXBTC15M-26AUG110315-15 sent 3
+    # entry orders and ...110330-30 sent 2. None of those produced a duplicate
+    # position, because a no-filled IOC leaves nothing behind -- but "rejected"
+    # is the dangerous one. An HTTP 503 that the exchange accepted before failing
+    # to respond is recorded as rejected here while being live there; retrying
+    # then mints a SECOND client_order_id and a second real position, and the
+    # per-order size cap cannot see it. One 503 has already been observed
+    # (2026-08-11, mid-exit), so this is a demonstrated failure mode, not a
+    # hypothetical.
+    #
+    # The cost is real and accepted: an unlucky no-fill now forfeits the window
+    # instead of retrying. Entries rest as GTC rather than firing IOC, so they
+    # sit in the book waiting to be filled rather than failing outright, which is
+    # what makes that cost affordable.
+    #
+    # Note this checks ENTRY orders only. Exit orders on the same ticker are
+    # expected and must never look like "already entered".
+    if any(r["ticker"] == market.ticker and "entry" in r.get("note", "")
            for r in ex.load_orders()):
-        return session                      # already traded, or trying to, this window
+        return session                      # this window has had its one attempt
 
     candles = fetch_1min_candles()
     spot = fetch_spot_price(candles)

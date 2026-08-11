@@ -40,6 +40,7 @@ import live_executor as ex
 import live_trader as lt
 from singleton import AlreadyRunning, SingleInstance
 
+FLOOR_MODE = "--floor" in sys.argv   # keep the real floor; expect zero fills
 TARGET_SIZE = 15          # ~3x the observed touch depth of 5
 MAX_BUILD_TRIES = 10
 CYCLES = 8
@@ -72,8 +73,15 @@ def pick_market():
     r = requests.get(f"{config.KALSHI_TRADE_BASE}/markets",
                      params={"series_ticker": config.KALSHI_SERIES_TICKER,
                              "status": "open", "limit": 20}, timeout=20).json()
+    # Never build on top of a position that is already open. Another diagnostic
+    # holding 1 contract in the same market would be folded into this test's
+    # average cost and its own settlement measurement would be corrupted by
+    # this test's fills -- two experiments silently invalidating each other.
+    busy = {p["ticker"] for p in ex.position_summary() if p["contracts"] != 0}
     best = None
     for m in r.get("markets", []) or []:
+        if m["ticker"] in busy:
+            continue
         ml = mins_left(m)
         if ml < 5.0 or ml > 20.0:
             continue
@@ -157,11 +165,18 @@ def main():
 
     # --- 2. force the exit path and drive REAL run_cycle ---------------------
     print("\n--- DRIVING live_trader.run_cycle() " + "-" * 38)
-    print(f"overrides: PAPER_TRADE_EXIT_TARGET -9.0, EXIT_COMMIT_FLOOR -9.0 "
-          f"(forces commit; see module docstring)")
     saved = (config.PAPER_TRADE_EXIT_TARGET, config.EXIT_COMMIT_FLOOR)
-    config.PAPER_TRADE_EXIT_TARGET = -9.0
-    config.EXIT_COMMIT_FLOOR = -9.0
+    config.PAPER_TRADE_EXIT_TARGET = -9.0        # force the commit in both modes
+    if FLOOR_MODE:
+        # Keep the REAL floor. The position was built by crossing the spread, so
+        # it is underwater from birth -- a correct floor must refuse to sell it
+        # at all. ANY fill in this mode is the 2026-08-11 bug reappearing.
+        print(f"mode: FLOOR TEST -- commit forced, EXIT_COMMIT_FLOOR left REAL "
+              f"({config.EXIT_COMMIT_FLOOR:+.2f}); expecting ZERO exit fills")
+    else:
+        config.EXIT_COMMIT_FLOOR = -9.0
+        print("mode: COMPLETION TEST -- commit and floor both forced "
+              "(see module docstring)")
 
     session = {"utc_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                "realized_pnl": 0.0, "entries": 0, "exits": 0, "halted_reason": ""}
@@ -219,6 +234,16 @@ def main():
     ok_multi = len(exit_orders) > 1
     st = session.get("exiting", {}).get(tkr, {})
     ok_breaker = bool(st.get("gave_up"))
+    if FLOOR_MODE:
+        sold = sum(f(r.get("fill_count")) for r in exit_orders)
+        floor_ok = sold == 0 and final == p0["contracts"]
+        gv = session.get("exiting", {}).get(tkr, {}).get("gave_up")
+        print(f"[{'PASS' if floor_ok else 'FAIL'}] floor refused to sell an "
+              f"underwater position ({sold:.0f} contract(s) sold, position "
+              f"{p0['contracts']:+.0f} -> {final:+.0f})")
+        print(f"[{'PASS' if gv else 'FAIL'}] recorded why it refused ({gv})")
+        print("RESULT:", "PASS" if (floor_ok and gv) else "FAIL")
+        return 0 if (floor_ok and gv) else 1
     print(f"[{'PASS' if ok_multi else 'FAIL'}] exit persisted across more than one order "
           f"({len(exit_orders)} exit orders)")
     print(f"[{'PASS' if ok_flat or ok_breaker else 'FAIL'}] ended flat, or stopped for a "

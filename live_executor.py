@@ -122,22 +122,54 @@ def find_by_client_id(client_order_id: str) -> dict | None:
 
 # --- signed POST (kalshi_auth stays GET-only) --------------------------------
 
-def _post(path: str, payload: dict, timeout: int = 20) -> tuple[int, dict]:
+def _post(path: str, payload: dict, timeout: int = 20,
+          retries: int = 3) -> tuple[int, dict]:
+    """Signed POST, retried on TRANSIENT exchange failures only.
+
+    Retrying a write is only safe because every order carries a
+    client_order_id: Kalshi rejects a duplicate with HTTP 409, so a retry
+    either places the order exactly once or is told it already exists. Without
+    that idempotency key this loop would be a double-order bug.
+
+    Only 5xx and transport errors retry. A 4xx is the exchange saying the
+    request itself is wrong -- retrying it just sends the same wrong request
+    again, and 409 in particular is meaningful information, not a failure.
+
+    Measured 2026-08-11: a bare HTTP 503 killed an entire committed exit
+    attempt on 25 contracts and cost a full 60s cycle while the position sat
+    open. The persistence logic recovered it on the next cycle, but the cycle
+    should not have been lost in the first place.
+    """
     base = config.KALSHI_TRADE_BASE
     full_path = f"{urlparse(base).path}{path}"
-    ts = str(int(time.time() * 1000))
-    headers = {
-        "KALSHI-ACCESS-KEY": config.KALSHI_API_KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": ts,
-        "KALSHI-ACCESS-SIGNATURE": kalshi_auth._sign(ts, "POST", full_path),
-        "Content-Type": "application/json",
-    }
-    resp = _session.post(base + path, headers=headers, json=payload, timeout=timeout)
-    try:
-        body = resp.json()
-    except ValueError:
-        body = {"raw": resp.text[:400]}
-    return resp.status_code, body
+    for attempt in range(retries):
+        ts = str(int(time.time() * 1000))
+        headers = {
+            "KALSHI-ACCESS-KEY": config.KALSHI_API_KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": ts,
+            "KALSHI-ACCESS-SIGNATURE": kalshi_auth._sign(ts, "POST", full_path),
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = _session.post(base + path, headers=headers, json=payload,
+                                 timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt < retries - 1:
+                time.sleep(0.3 * (2 ** attempt))
+                continue
+            # Out of retries on a transport error: the request may or may not
+            # have reached the exchange. Say so -- place_order maps this to
+            # "unknown", which is reconciled, never assumed dead.
+            raise LiveExecError(f"POST {path} transport failure: {exc}") from exc
+        if resp.status_code >= 500 and attempt < retries - 1:
+            time.sleep(0.3 * (2 ** attempt))
+            continue
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {"raw": resp.text[:400]}
+        return resp.status_code, body
+    return resp.status_code, {"raw": "retries exhausted"}
 
 
 def _delete(path: str, timeout: int = 20) -> tuple[int, dict]:

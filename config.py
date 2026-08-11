@@ -140,6 +140,15 @@ EXIT_COMMIT_FLOOR = 0.0          # a committed exit keeps working while the gain
                                  # point -- but will not turn a profit-take into
                                  # a stop-loss, which was never validated and
                                  # which EV does not favour anyway
+EXIT_MAX_ADVERSE_MOVE = 0.15     # dollars of position value. A committed exit
+                                 # aborts if the price runs this far against the
+                                 # quote that triggered it. The floor alone is
+                                 # not enough -- a cheaply-entered position can
+                                 # stay above break-even while the market moves
+                                 # a long way from the reason we decided to sell.
+                                 # 15c is wider than ordinary tick-to-tick noise
+                                 # on this book and far narrower than the 43c
+                                 # move that cost real money on 2026-08-11.
 EXIT_GIVE_UP_MINUTES = 1.5       # inside this much time to close, stop trying and
                                  # let the remainder settle -- chasing liquidity
                                  # into the settlement print is how you get the

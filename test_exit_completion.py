@@ -42,7 +42,8 @@ class FakeBook:
     """
 
     def __init__(self, contracts, avg_cost, depth=3, mins_left=8.0,
-                 prices=None, ticker="TEST-MKT", stale_quote=None):
+                 prices=None, ticker="TEST-MKT", stale_quote=None,
+                 sweep_prices=None):
         self.ticker = ticker
         self.contracts = float(contracts)       # signed: >0 long YES, <0 short YES
         self.avg_cost = avg_cost
@@ -50,6 +51,7 @@ class FakeBook:
         self.mins_left = mins_left
         self.prices = list(prices or [])        # TRUE book yes-price per cycle
         self.stale_quote = stale_quote          # what /markets/{t} wrongly says
+        self.sweep_prices = list(sweep_prices or [])   # price per ORDER, not per cycle
         self.cycle = 0
         self.orders = []
 
@@ -88,16 +90,27 @@ class FakeBook:
                 "fill_count": filled, "avg_fill_price": price,
                 "fee_paid": 0.0, "order_id": "x", "client_order_id": "y"}
 
+    def _px(self):
+        """Current touch price.
+
+        When `sweep_prices` is set the price advances on every ORDER, not every
+        cycle -- which is how the real market behaved on 2026-08-11 (the ask ran
+        0.47 -> 0.90 across three sweeps six seconds apart). The original
+        FakeBook could only vary price BETWEEN cycles, so it was structurally
+        incapable of expressing the bug that cost real money, and the tests
+        passed while the defect shipped.
+        """
+        if self.sweep_prices:
+            return self.sweep_prices[min(len(self.orders), len(self.sweep_prices) - 1)]
+        return self.prices[min(self.cycle, len(self.prices) - 1)]
+
     def book(self, ticker=None, retries=None):
-        """The touch. `stale_quote` lets a test make market_quote disagree with
-        the book, the way the real feeds did on 2026-08-11."""
-        px = self.prices[min(self.cycle, len(self.prices) - 1)]
+        px = self._px()
         return {"yes_bid": px, "yes_bid_size": float(self.depth),
                 "yes_ask": round(px + 0.01, 4), "yes_ask_size": float(self.depth)}
 
     def quote(self, ticker=None, retries=None):
-        px = (self.stale_quote if self.stale_quote is not None
-              else self.prices[min(self.cycle, len(self.prices) - 1)])
+        px = self.stale_quote if self.stale_quote is not None else self._px()
         closes = datetime.now(timezone.utc) + timedelta(minutes=self.mins_left)
         return {"status": "active", "ticker": self.ticker,
                 "yes_bid_dollars": str(px), "yes_ask_dollars": str(round(px + 0.01, 4)),
@@ -269,6 +282,61 @@ check("exit DOES fire when the book supports it and the quote lags low",
       len(book8b.orders) > 0 and all(abs(o["price"] - 0.62) < 1e-9
                                      for o in book8b.orders),
       f"{len(book8b.orders)} orders, all priced at the book bid 0.62")
+
+print()
+print("=" * 74)
+print("TEST 9 -- THE FLOOR MUST HOLD *WITHIN* A CYCLE, NOT JUST BETWEEN CYCLES")
+print("=" * 74)
+# The exact 2026-08-11 sequence. Short YES at 0.44 (held as NO). The exit
+# commits while the position is worth 0.76, then the yes-ask runs away:
+#   order 1 @ 0.47 -> position worth 0.53, still a profit, TAKE IT
+#   order 2 @ 0.90 -> position worth 0.10, a -77% loss, MUST NOT TAKE IT
+# The shipped code took it and realised -$1.70 on 5 contracts.
+book9 = FakeBook(contracts=-25, avg_cost=0.44, depth=5, mins_left=6.0,
+                 sweep_prices=[0.24, 0.47, 0.90, 0.90, 0.90, 0.90])
+s9 = run(book9, cycles=3)
+prices = [round(o["price"], 2) for o in book9.orders]
+check("never buys back above the break-even floor mid-sweep",
+      all(o["price"] <= 1.0 - book9.avg_cost + 1e-9 for o in book9.orders),
+      f"order prices {prices}, cost 0.44 -> max payable {1-0.44:.2f}")
+check("the 0.90 fill that cost -$1.70 does not happen",
+      0.90 not in prices, f"prices {prices}")
+st9 = s9.get("exiting", {}).get(book9.ticker, {})
+check("aborts with a recorded reason rather than silently",
+      bool(st9.get("gave_up")), f"gave_up={st9.get('gave_up')}")
+check("the profitable fills still happened",
+      any(o["filled"] > 0 for o in book9.orders),
+      f"{sum(o['filled'] for o in book9.orders):.0f} contracts closed at a profit")
+
+print()
+print("=" * 74)
+print("TEST 10 -- adverse-move limit is WITHIN-cycle, and pauses not gives up")
+print("=" * 74)
+# Entered cheap at 0.20, commits at 0.80, price collapses to 0.55 inside the
+# same cycle. Still a +175% gain, so the FLOOR never trips -- only the
+# adverse-move guard can stop the chase. But 0.55 is a fine price, so once the
+# market settles there the exit must CONTINUE next cycle, not abandon 25
+# contracts over a move that left it hugely profitable.
+book10 = FakeBook(contracts=25, avg_cost=0.20, depth=5, mins_left=6.0,
+                  sweep_prices=[0.80, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55])
+s10 = run(book10, cycles=4)
+st10 = s10.get("exiting", {}).get(book10.ticker, {})
+first_cycle = [o for o in book10.orders if o["cycle"] == 0]
+check("stops sweeping once price runs past the limit inside one cycle",
+      len(first_cycle) == 1,
+      f"{len(first_cycle)} order(s) in cycle 0 (0.80 -> 0.55 is a "
+      f"{(0.80-0.55)*100:.0f}c move, limit {config.EXIT_MAX_ADVERSE_MOVE*100:.0f}c)")
+check("does NOT permanently give up over a still-profitable move",
+      not st10.get("gave_up"), f"gave_up={st10.get('gave_up')}")
+check("resumes at the new level on later cycles",
+      any(o["cycle"] > 0 for o in book10.orders),
+      f"{len([o for o in book10.orders if o['cycle'] > 0])} order(s) after cycle 0")
+check("floor alone would NOT have caught this",
+      (0.55 - 0.20) / 0.20 > config.EXIT_COMMIT_FLOOR,
+      f"gain at 0.55 was {((0.55-0.20)/0.20)*100:+.0f}%, floor is "
+      f"{config.EXIT_COMMIT_FLOOR*100:+.0f}%")
+check("position still reaches flat", book10.contracts == 0,
+      f"{book10.contracts:.0f} left")
 
 print()
 print("=" * 74)
