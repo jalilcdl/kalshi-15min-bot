@@ -172,21 +172,46 @@ def _post(path: str, payload: dict, timeout: int = 20,
     return resp.status_code, {"raw": "retries exhausted"}
 
 
-def _delete(path: str, timeout: int = 20) -> tuple[int, dict]:
+def _delete(path: str, timeout: int = 20, retries: int = 3) -> tuple[int, dict]:
+    """Signed DELETE, retried on transient failures.
+
+    Retrying a cancel is safe in a way retrying an order is not: cancelling
+    twice is harmless (the second attempt just reports it is already gone),
+    whereas a duplicated POST would be a second real position. So this needs no
+    idempotency key -- only _post does.
+
+    Measured 2026-08-11 18:13:20: the stale-entry cancel returned ok=False, the
+    resting order stayed live, and 67 seconds later it took a 1-contract fill at
+    18:14:26 -- inside the final minutes, on the settlement print. That is the
+    precise outcome the stale-entry cancel exists to prevent, defeated by one
+    transient failure. The next cycle's retry did succeed, but a cycle is far too
+    slow when the window is closing.
+    """
     base = config.KALSHI_TRADE_BASE
     full_path = f"{urlparse(base).path}{path}"
-    ts = str(int(time.time() * 1000))
-    headers = {
-        "KALSHI-ACCESS-KEY": config.KALSHI_API_KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": ts,
-        "KALSHI-ACCESS-SIGNATURE": kalshi_auth._sign(ts, "DELETE", full_path),
-    }
-    resp = _session.delete(base + path, headers=headers, timeout=timeout)
-    try:
-        body = resp.json()
-    except ValueError:
-        body = {"raw": resp.text[:400]}
-    return resp.status_code, body
+    for attempt in range(retries):
+        ts = str(int(time.time() * 1000))
+        headers = {
+            "KALSHI-ACCESS-KEY": config.KALSHI_API_KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": ts,
+            "KALSHI-ACCESS-SIGNATURE": kalshi_auth._sign(ts, "DELETE", full_path),
+        }
+        try:
+            resp = _session.delete(base + path, headers=headers, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt < retries - 1:
+                time.sleep(0.3 * (2 ** attempt))
+                continue
+            raise LiveExecError(f"DELETE {path} transport failure: {exc}") from exc
+        if resp.status_code >= 500 and attempt < retries - 1:
+            time.sleep(0.3 * (2 ** attempt))
+            continue
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {"raw": resp.text[:400]}
+        return resp.status_code, body
+    return resp.status_code, {"raw": "retries exhausted"}
 
 
 # --- orders ------------------------------------------------------------------
