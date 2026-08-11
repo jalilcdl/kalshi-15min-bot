@@ -340,6 +340,8 @@ def run_cycle(session: dict) -> dict:
         contracts = p["contracts"]
         avg_cost = abs(p["exposure"]) / abs(contracts) if contracts else 0.0
         if avg_cost <= 0:
+            log(f"  ANOMALY {tkr}: {contracts:+.0f} contracts with no cost basis "
+                f"(exposure {p['exposure']}) -- cannot evaluate an exit, holding")
             continue
 
         # Price off the ORDERBOOK, not the market quote -- see book_touch().
@@ -558,6 +560,7 @@ def run_cycle(session: dict) -> dict:
 
     market = get_active_market()
     if market is None or market.strike is None:
+        log("  no active market with a strike right now -- idle this cycle")
         return session
     held = {p["ticker"] for p in positions if p["contracts"] != 0}
     if market.ticker in held:
@@ -589,9 +592,16 @@ def run_cycle(session: dict) -> dict:
     #
     # Note this checks ENTRY orders only. Exit orders on the same ticker are
     # expected and must never look like "already entered".
-    if any(r["ticker"] == market.ticker and "entry" in r.get("note", "")
-           for r in ex.load_orders()):
-        return session                      # this window has had its one attempt
+    prior = [r for r in ex.load_orders()
+             if r["ticker"] == market.ticker and "entry" in r.get("note", "")]
+    if prior:
+        # Say so. Silence here produced a 12-minute gap on 2026-08-11
+        # (20:01-20:13) after an entry rested unfilled: no position, so the
+        # holding branch above never fired, and every cycle to the end of the
+        # window returned from this line without a word.
+        log(f"  {market.ticker}: already attempted this window "
+            f"({prior[-1]['status']}) -- one entry per window, standing down")
+        return session
 
     candles = fetch_1min_candles()
     spot = fetch_spot_price(candles)
