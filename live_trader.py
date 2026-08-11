@@ -664,7 +664,12 @@ def print_status():
     allowed, why = entries_allowed(s)
     print(f"env                 {config.KALSHI_ENV}")
     print(f"kill switch         {'ACTIVE -- ' + str(config.LIVE_KILL_SWITCH_FILE) if kill_switch_active() else 'clear'}")
-    print(f"daily loss cap      ${config.LIVE_DAILY_LOSS_CAP:.2f}")
+    _cap = config.effective_loss_cap()
+    print(f"daily loss cap      ${_cap:.2f}"
+          + (f"  (standing ${abs(config.LIVE_DAILY_LOSS_CAP):.2f} + "
+             f"${abs(config.LIVE_LOSS_CAP_OFFSET):.2f} offset expiring after "
+             f"{config.LIVE_LOSS_CAP_OFFSET_DATE})"
+             if _cap != abs(config.LIVE_DAILY_LOSS_CAP) else ""))
     print(f"session date        {s['utc_date']}")
     print(f"session realized    {s['realized_pnl']:+.4f}")
     print(f"entries / exits     {s['entries']} / {s['exits']}")
@@ -686,7 +691,8 @@ def main():
         return 0
 
     log(f"live_trader starting -- env={config.KALSHI_ENV} "
-        f"size_cap={config.LIVE_MAX_CONTRACTS} loss_cap=${config.LIVE_DAILY_LOSS_CAP} "
+        f"size_cap={config.LIVE_MAX_CONTRACTS} "
+        f"loss_cap=${config.effective_loss_cap():.2f} "
         f"exit_target=+{config.PAPER_TRADE_EXIT_TARGET*100:.0f}%")
     session = load_session()
     once = "--once" in sys.argv
