@@ -329,6 +329,21 @@ def reconcile() -> dict:
     # reads it to ignore the one signal that matters.
     orphan_fills = []
     for tkr in sorted(local_tickers - exch_tickers):
+        # A logged fill with no open position is EXPECTED in two ordinary cases:
+        #   1. the market settled (get_positions asks for unsettled only), and
+        #   2. we entered AND closed it -- a completed round trip.
+        # Case 2 was missing and made reconcile() report DRIFT on every
+        # successful round trip while the market was still open. A reconciler
+        # that cries wolf on normal success trains whoever reads it to ignore
+        # the one signal that matters, which is worse than no reconciler.
+        try:
+            net = sum(float(f.get("count_fp") or 0) *
+                      (1 if f.get("action") == "buy" else -1)
+                      for f in kalshi_auth.get_fills(limit=100, ticker=tkr))
+            if abs(net) < 1e-9:
+                continue                      # flat by our own fills: not drift
+        except Exception:
+            pass
         try:
             m = requests.get(f"{config.KALSHI_TRADE_BASE}/markets/{tkr}",
                              timeout=15).json().get("market", {})

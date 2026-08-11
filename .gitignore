@@ -86,3 +86,7 @@ desktop.ini
 
 # Singleton lock files (runtime state, machine-local)
 .*.lock
+
+# live_trader stdout/stderr redirect targets (runtime logs)
+live_run.log
+live_run.err
