@@ -354,6 +354,14 @@ def run_cycle(session: dict) -> dict:
             px = book.get("yes_ask", _f(q.get("yes_ask_dollars")))
             value_px, order_px, side = 1.0 - px, px, "bid"
         if value_px <= 0 or not (0.0 < order_px < 1.0):
+            # The side we would have to trade against is empty, so there is
+            # nothing to do -- but say so. Skipping silently produced 13 minutes
+            # of total log silence on 2026-08-11 while holding 25 contracts
+            # (19:32-19:45), which is indistinguishable from a hung process at
+            # exactly the moment an operator most wants to know the difference.
+            log(f"  {tkr} {contracts:+.0f} @ avg {avg_cost:.4f}: no usable "
+                f"{'bid' if contracts > 0 else 'ask'} on the book -- cannot exit "
+                f"this cycle, holding")
             continue
         gain = (value_px - avg_cost) / avg_cost
 
@@ -371,8 +379,13 @@ def run_cycle(session: dict) -> dict:
         # commitment, and the next cycle would see gain >= target with no state
         # and commit all over again -- reintroducing the abandon/re-decide churn
         # this whole fix exists to remove. The record dies with the position.
-        def _give_up(why):
-            log(f"EXIT GIVE-UP {tkr} ({why}): {abs(contracts):.0f} contract(s) "
+        def _give_up(why, left=None):
+            # `left` is the live remainder. Defaulting to the cycle-start count
+            # misreported the position size in the one message an operator reads
+            # during an incident: on 2026-08-11 19:06 it said "25 contract(s)
+            # left" when 5 had already been sold and 20 remained.
+            n = abs(contracts) if left is None else left
+            log(f"EXIT GIVE-UP {tkr} ({why}): {n:.0f} contract(s) "
                 f"left, {mins_left:.1f}min to close -- letting it ride to settlement")
             exiting.setdefault(tkr, {"started": _stamp(), "attempts": 0})["gave_up"] = why
 
@@ -461,7 +474,8 @@ def run_cycle(session: dict) -> dict:
             # (i) the floor, now enforced per order rather than per cycle
             if sweep_gain < config.EXIT_COMMIT_FLOOR:
                 _give_up(f"sweep {sweep+1}: gain {sweep_gain*100:+.0f}% fell below "
-                         f"the {config.EXIT_COMMIT_FLOOR*100:+.0f}% floor mid-exit")
+                         f"the {config.EXIT_COMMIT_FLOOR*100:+.0f}% floor mid-exit",
+                         left=remaining)
                 break
 
             # (ii) a bound on how far price may run against us WITHIN one cycle.
@@ -541,6 +555,11 @@ def run_cycle(session: dict) -> dict:
         return session
     held = {p["ticker"] for p in positions if p["contracts"] != 0}
     if market.ticker in held:
+        # Nothing to decide -- we are already in this window. Logged anyway: the
+        # exit section above is also quiet when it cannot act, and between them
+        # the process went completely silent for 13 minutes while holding a
+        # position. "Working normally" and "wedged" must not look identical.
+        log(f"  holding {market.ticker}; no entry decision this cycle")
         return session
     # ONE ENTRY ATTEMPT PER WINDOW. Any prior entry order on this ticker, in ANY
     # terminal or in-flight state, closes the window for good.
