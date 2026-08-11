@@ -34,6 +34,7 @@ lookback window, where a minute of lag barely moves the estimate, unlike a
 spot-vs-strike comparison.
 """
 
+import time
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -93,13 +94,30 @@ def fetch_1min_candles(limit: int = config.LOOKBACK_BARS,
         params["start"] = datetime.fromtimestamp(start, tz=timezone.utc).isoformat()
         params["end"] = datetime.fromtimestamp(end, tz=timezone.utc).isoformat()
 
-    resp = _session.get(
-        f"{config.COINBASE_BASE}/products/{config.COINBASE_PRODUCT}/candles",
-        params=params,
-        timeout=15,
-    )
-    resp.raise_for_status()
-    rows = resp.json()  # [[time, low, high, open, close, volume], ...] newest first
+    # Retry transient transport failures. Kalshi's request paths were hardened
+    # for exactly this on 2026-08-11, but THIS call was missed, and a single
+    # RemoteDisconnected from Coinbase then aborted a whole live_trader cycle
+    # (18:00:26 UTC). It sits in the entry section, after exits, so an exit in
+    # progress is never affected -- but a lost cycle is still a window the model
+    # never got to evaluate, over a failure that clears on the next attempt.
+    rows = None
+    for attempt in range(4):
+        try:
+            resp = _session.get(
+                f"{config.COINBASE_BASE}/products/{config.COINBASE_PRODUCT}/candles",
+                params=params,
+                timeout=15,
+            )
+            if (resp.status_code == 429 or resp.status_code >= 500) and attempt < 3:
+                time.sleep(0.4 * (2 ** attempt) + 0.5)
+                continue
+            resp.raise_for_status()
+            rows = resp.json()  # [[time, low, high, open, close, volume], ...]
+            break
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == 3:
+                raise
+            time.sleep(0.4 * (2 ** attempt) + 0.5)
     candles = [Candle(int(r[0]), float(r[1]), float(r[2]), float(r[3]),
                       float(r[4]), float(r[5])) for r in rows]
     candles.sort(key=lambda c: c.ts)
