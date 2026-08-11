@@ -34,6 +34,29 @@ No shared state, no shared log, no shared vocabulary.
    fill=0 for 24s and then filled 1 while the local log still said "resting".
    The exchange is the truth; local state is a cache that can be stale.
 
+=== EXITS COMPLETE; THEY DO NOT GET RECONSIDERED ===
+An exit is a two-part decision -- WHETHER to get out, and then GETTING out --
+and only the first is a market call. Once the +35% target is hit the ticker is
+recorded in session["exiting"] and the position is worked down every cycle
+until it is flat, whatever the price does next. Before this, each cycle re-ran
+the whole decision, so a position that partially filled at +54% and then ticked
+back to +30% was quietly abandoned half-closed. At size 4 that never showed,
+because 4 contracts fit inside the touch; at size 25 against a 5-deep book it
+stranded most of the position (2026-08-11: 20, 17 and 17 contracts left open).
+
+Three things bound it, so "persistent" never means "reckless":
+  EXIT_GIVE_UP_MINUTES  stop inside the last minutes -- thin book, and the
+                        quote is dominated by the settlement print
+  EXIT_MAX_ATTEMPTS     stop after N cycles that could not clear the position
+  EXIT_COMMIT_FLOOR     stop if the gain falls below break-even; completing a
+                        profit-take is the commitment, not liquidating at any
+                        price. A tripped breaker is recorded, not forgotten, so
+                        the next cycle cannot re-commit and start the churn again.
+
+Exits price off the ORDERBOOK (book_touch), never the market quote, whose bid
+lagged the real book by up to 48 cents in measurement -- enough to price a sell
+at a bid nobody was showing and get a clean zero fill.
+
 Usage:
     python live_trader.py --once      one cycle, then exit
     python live_trader.py             continuous loop
@@ -121,9 +144,69 @@ def entries_allowed(session: dict) -> tuple[bool, str]:
 
 # --- market helpers ----------------------------------------------------------
 
-def market_quote(ticker: str) -> dict:
-    r = requests.get(f"{config.KALSHI_TRADE_BASE}/markets/{ticker}", timeout=15)
-    return r.json().get("market", {}) or {}
+def market_quote(ticker: str, retries: int = 3) -> dict:
+    """Public market read, retried on transport failure. An unhandled
+    ConnectionError here used to abort the entire cycle -- including any exit
+    in progress -- see kalshi_auth._request for the same fix."""
+    for attempt in range(retries):
+        try:
+            r = requests.get(f"{config.KALSHI_TRADE_BASE}/markets/{ticker}", timeout=15)
+            return r.json().get("market", {}) or {}
+        except (requests.ConnectionError, requests.Timeout, ValueError) as exc:
+            if attempt == retries - 1:
+                log(f"  market_quote({ticker}) failed after {retries} tries: {exc}")
+                return {}
+            time.sleep(0.4 * (2 ** attempt))
+    return {}
+
+
+def book_touch(ticker: str, retries: int = 3) -> dict:
+    """The REAL top of book: {yes_bid, yes_ask, yes_bid_size, yes_ask_size}.
+
+    /markets/{ticker} carries yes_bid_dollars and yes_ask_dollars, and those
+    fields LAG. Measured on the demo exchange 2026-08-11, sampling both feeds
+    every 5s:
+
+        t=0s   market 0.58/0.64    book 0.58/0.64    agree
+        t=10s  market 0.58/0.64    book 0.10/0.67    market bid 48c too high
+        t=15s  market 0.58/0.64    book 0.10/0.67    still stale
+        t=20s  market 0.10/0.68    book 0.10/0.67    caught up
+
+    A 48-cent stale bid breaks an exit two separate ways. It priced sell orders
+    at a bid nobody was showing, so the IOC took nothing and reported a clean
+    zero fill -- which is exactly the "+49% -> filled 0/17" line in the incident.
+    And it inflated the gain calculation, so the bot believed it was up +49% on a
+    position the market had already repriced.
+
+    The orderbook is the book you actually trade against, so exits read it.
+    Returns {} on failure; the caller falls back to the (lagging) market quote,
+    since a stale price beats no exit attempt at all.
+    """
+    for attempt in range(retries):
+        try:
+            r = requests.get(
+                f"{config.KALSHI_TRADE_BASE}/markets/{ticker}/orderbook", timeout=15)
+            ob = (r.json().get("orderbook_fp") or {})
+            # Kalshi quotes both sides as BIDS: yes_dollars are bids to buy YES,
+            # no_dollars are bids to buy NO. The yes ask is therefore 1 - best no
+            # bid. Levels come sorted worst-to-best, so the touch is the last one.
+            yes = ob.get("yes_dollars") or []
+            no = ob.get("no_dollars") or []
+            out = {}
+            if yes:
+                out["yes_bid"] = float(yes[-1][0])
+                out["yes_bid_size"] = float(yes[-1][1])
+            if no:
+                out["yes_ask"] = 1.0 - float(no[-1][0])
+                out["yes_ask_size"] = float(no[-1][1])
+            return out
+        except (requests.ConnectionError, requests.Timeout, ValueError,
+                IndexError, TypeError) as exc:
+            if attempt == retries - 1:
+                log(f"  book_touch({ticker}) failed after {retries} tries: {exc}")
+                return {}
+            time.sleep(0.4 * (2 ** attempt))
+    return {}
 
 
 def _f(v, default=0.0):
@@ -210,68 +293,185 @@ def run_cycle(session: dict) -> dict:
 
     positions = ex.position_summary()
 
-    # 2. EXITS -- these run even when entries are halted.
+    # 2. EXITS -- run even when entries are halted (kill switch / loss cap).
+    #
+    # PERSISTENT EXIT COMPLETION. The original logic re-decided from scratch each
+    # cycle: if gain was >= target it fired one IOC, and if the price ticked back
+    # below target next cycle it simply stopped. That was invisible while orders
+    # fit inside book depth (size 4), and broke badly at size 25 against a demo
+    # book ~3-5 deep. Observed 2026-08-11:
+    #     +54.3% -> ordered 25, filled  5   (20 left open)
+    #     +44.4% -> ordered 20, filled  3   (17 left open)
+    #     -22.2% -> no exit attempted at all
+    #     +49.2% -> ordered 17, filled  0   (17 left, rode to settlement)
+    # A decision to take profit was abandoned mid-execution because the market
+    # moved -- the one moment it must NOT be abandoned.
+    #
+    # Now: once a position starts exiting it is recorded in session["exiting"]
+    # and worked down EVERY cycle until flat, regardless of current gain.
+    exiting = session.setdefault("exiting", {})
+
     for p in positions:
+        tkr = p["ticker"]
         if p["contracts"] == 0:
+            if tkr in exiting:
+                log(f"EXIT COMPLETE {tkr} -- flat after "
+                    f"{exiting[tkr].get('attempts', 0)} attempt(s)")
+                exiting.pop(tkr, None)
+                session["exits"] = session.get("exits", 0) + 1
             continue
-        q = market_quote(p["ticker"])
+
+        q = market_quote(tkr)
+        if not q:
+            # Empty means the READ failed, not that the market closed. Dropping a
+            # live exit commitment because the network blinked is precisely the
+            # abandonment this fix exists to prevent, so hold the state and try
+            # again next cycle.
+            log(f"  {tkr}: quote unavailable this cycle; exit state held")
+            continue
         if q.get("status") != "active":
+            if tkr in exiting:
+                log(f"EXIT ABANDONED {tkr} -- market no longer active; "
+                    f"{abs(p['contracts']):.0f} contract(s) ride to settlement")
+                exiting.pop(tkr, None)
             continue
+
         contracts = p["contracts"]
-        # Average cost per contract, from the EXCHANGE's numbers, not local state.
         avg_cost = abs(p["exposure"]) / abs(contracts) if contracts else 0.0
         if avg_cost <= 0:
             continue
-        # UNITS. avg_cost is in the units of the position we HOLD: YES-price for
-        # a long, NO-price for a short (exposure/contracts from the exchange).
-        # The GAIN must be computed in those same units, but the ORDER PRICE is
-        # ALWAYS quoted in YES terms. Conflating the two is a real bug that
-        # already cost money on 2026-08-11: a short's exit passed the NO-terms
-        # value (0.72) straight through as the order price, i.e. "buy YES at up
-        # to 0.72" when the ask was ~0.55. It crossed and filled far worse than
-        # intended, turning a supposed +35.8% into a realised LOSS.
-        if contracts > 0:                       # long YES: value at the yes bid
-            value_px = _f(q.get("yes_bid_dollars"))   # in YES terms
-            order_px = value_px                       # sell YES at the bid
-            side = "ask"
-        else:                                   # short YES (== long NO)
-            yes_ask = _f(q.get("yes_ask_dollars"))
-            value_px = 1.0 - yes_ask                  # in NO terms (the no bid)
-            order_px = yes_ask                        # buy YES back at the ask
-            side = "bid"
+
+        # Price off the ORDERBOOK, not the market quote -- see book_touch().
+        # Two units lessons live in these four lines, both paid for on
+        # 2026-08-11: gain is measured in the units of the position held, while
+        # the ORDER PRICE is always in YES terms.
+        book = book_touch(tkr)
+        if contracts > 0:                       # long YES: sell into the yes bid
+            px = book.get("yes_bid", _f(q.get("yes_bid_dollars")))
+            value_px, order_px, side = px, px, "ask"
+        else:                                   # short YES (long NO): buy YES back
+            px = book.get("yes_ask", _f(q.get("yes_ask_dollars")))
+            value_px, order_px, side = 1.0 - px, px, "bid"
         if value_px <= 0 or not (0.0 < order_px < 1.0):
             continue
         gain = (value_px - avg_cost) / avg_cost
-        log(f"position {p['ticker']} {contracts:+.0f} @ avg {avg_cost:.4f} "
-            f"value_px={value_px:.4f} gain={gain*100:+.1f}% "
-            f"(target +{config.PAPER_TRADE_EXIT_TARGET*100:.0f}%)")
-        if gain >= config.PAPER_TRADE_EXIT_TARGET:
-            n = int(min(abs(contracts), config.LIVE_MAX_CONTRACTS))
-            log(f"EXIT TARGET HIT -> closing {n} of {p['ticker']} "
-                f"side={side} order_px={order_px:.4f} (value {value_px:.4f})")
-            r = ex.place_order(p["ticker"], side, n, order_px,
-                               time_in_force="immediate_or_cancel",
-                               note=f"phase3 exit +{gain*100:.0f}%")
-            log(f"  exit order: status={r['status']} fill={r.get('fill_count')} "
-                f"avg_fill={r.get('avg_fill_price')} err={str(r.get('error'))[:100]}")
-            if r["status"] in ("filled", "partial"):
-                filled = float(r.get("fill_count") or 0)
-                # P&L from the ACTUAL fill price, never the intended one. The
-                # same incident reported +$0.76 off the intended price while the
-                # exchange recorded -$0.32 from the real fill.
-                avg_fill = _f(r.get("avg_fill_price"), None)
-                if avg_fill is None or avg_fill <= 0:
-                    realised_value = value_px          # fall back, and say so
-                    log("  WARNING: no avg_fill_price returned; P&L uses the "
-                        "quoted value and may be wrong -- trust reconcile()")
-                else:
-                    # avg_fill is YES-terms; convert to the position's units.
+
+        mins_left = 99.0
+        try:
+            closes = datetime.fromisoformat(q["close_time"].replace("Z", "+00:00"))
+            mins_left = (closes - datetime.now(timezone.utc)).total_seconds() / 60.0
+        except Exception:
+            pass
+
+        state = exiting.get(tkr)
+
+        # CIRCUIT BREAKERS.
+        # A tripped breaker is RECORDED, not deleted. Deleting it would clear the
+        # commitment, and the next cycle would see gain >= target with no state
+        # and commit all over again -- reintroducing the abandon/re-decide churn
+        # this whole fix exists to remove. The record dies with the position.
+        def _give_up(why):
+            log(f"EXIT GIVE-UP {tkr} ({why}): {abs(contracts):.0f} contract(s) "
+                f"left, {mins_left:.1f}min to close -- letting it ride to settlement")
+            exiting.setdefault(tkr, {"started": _stamp(), "attempts": 0})["gave_up"] = why
+
+        if state and state.get("gave_up"):
+            continue
+
+        # (a) Too close to settlement. Applies to a fresh target hit as well as a
+        # remainder in progress: inside the last minutes the book thins and the
+        # print dominates the quote, which is the same reason entries stop at
+        # FINAL_MINUTES_NOISY. Not exiting costs variance, not expected value --
+        # at price p a contract is worth ~p either way, so paying a taker fee and
+        # a widened spread to get out of a position that settles in 90 seconds
+        # buys nothing.
+        if mins_left <= config.EXIT_GIVE_UP_MINUTES:
+            if state:
+                _give_up("window closing")
+            continue
+
+        if state:
+            if state.get("attempts", 0) >= config.EXIT_MAX_ATTEMPTS:
+                _give_up("max attempts")
+                continue
+            # (b) The commitment is to COMPLETE a profit-take, not to liquidate at
+            # any price. Staying committed through a dip from +54% to +12% is the
+            # entire point of this fix. Selling BELOW cost is a different act: a
+            # stop-loss, which this strategy never validated and which expected
+            # value does not favour -- the quote is roughly the settlement
+            # probability, so holding pays about the same as selling, minus the
+            # fee and spread that selling actually costs.
+            if gain < config.EXIT_COMMIT_FLOOR:
+                _give_up(f"gain {gain*100:+.0f}% below the "
+                         f"{config.EXIT_COMMIT_FLOOR*100:+.0f}% floor")
+                continue
+
+        if state is None:
+            if gain < config.PAPER_TRADE_EXIT_TARGET:
+                log(f"position {tkr} {contracts:+.0f} @ avg {avg_cost:.4f} "
+                    f"value_px={value_px:.4f} gain={gain*100:+.1f}% "
+                    f"(target +{config.PAPER_TRADE_EXIT_TARGET*100:.0f}%)")
+                continue
+            state = exiting[tkr] = {"started": _stamp(), "attempts": 0,
+                                    "gain_at_decision": gain,
+                                    "contracts_at_decision": abs(contracts)}
+            log(f"EXIT TARGET HIT {tkr}: gain {gain*100:+.1f}% on "
+                f"{abs(contracts):.0f} contract(s) -- COMMITTING to exit, will work "
+                f"the remainder down until flat")
+
+        # Committed. Sweep within the cycle: this book replenishes in seconds, so
+        # several small IOCs beat one large one that takes only what is at the
+        # touch right now and cancels the rest.
+        state["attempts"] = state.get("attempts", 0) + 1
+        remaining = abs(contracts)
+        got_total = 0.0
+        for sweep in range(config.EXIT_SWEEPS_PER_CYCLE):
+            if remaining <= 0:
+                break
+            if sweep:                       # re-read the touch between sweeps
+                b2 = book_touch(tkr)
+                q2 = market_quote(tkr)
+                px = (b2.get("yes_bid", _f(q2.get("yes_bid_dollars"))) if contracts > 0
+                      else b2.get("yes_ask", _f(q2.get("yes_ask_dollars"))))
+            else:
+                px = order_px
+            if not (0.0 < px < 1.0):
+                break
+            n = int(min(remaining, config.LIVE_MAX_CONTRACTS))
+            r = ex.place_order(tkr, side, n, px, time_in_force="immediate_or_cancel",
+                               note=f"phase3 exit sweep{sweep+1} att{state['attempts']}")
+            got = float(r.get("fill_count") or 0)
+            got_total += got
+            remaining -= got
+            log(f"  exit sweep {sweep+1}/{config.EXIT_SWEEPS_PER_CYCLE} {tkr}: "
+                f"asked {n} @ {px:.4f} -> {r['status']} filled {got:.0f}, "
+                f"{remaining:.0f} left")
+            if got > 0:
+                # P&L off the ACTUAL fill price, never the intended one, and in
+                # the units of the position held -- both lessons paid for on
+                # 2026-08-11, when a -$0.39 loss was reported as +$0.76.
+                avg_fill = _f(r.get("avg_fill_price"), 0.0)
+                if avg_fill > 0:
                     realised_value = avg_fill if contracts > 0 else 1.0 - avg_fill
-                pnl = (realised_value - avg_cost) * filled
-                fee = _f(r.get("fee_paid")) * filled
-                session["realized_pnl"] += pnl - fee
-                session["exits"] += 1
-                log(f"  realised {pnl:+.4f} minus fee {fee:.4f} = {pnl-fee:+.4f}; session P&L {session['realized_pnl']:+.4f}")
+                else:
+                    realised_value = value_px
+                fee = _f(r.get("fee_paid")) * got
+                session["exit_fills"] = session.get("exit_fills", 0) + 1
+                log(f"    realised {(realised_value - avg_cost) * got:+.4f} "
+                    f"minus fee {fee:.4f}")
+            if got == 0:
+                break                      # no liquidity right now; wait a cycle
+            time.sleep(config.EXIT_SWEEP_PAUSE_SECONDS)
+
+        log(f"  exit attempt {state['attempts']} on {tkr}: filled {got_total:.0f} "
+            f"of {abs(contracts):.0f}, {remaining:.0f} still open "
+            f"({mins_left:.1f}min to close)")
+
+    live_tickers = {p["ticker"] for p in positions if p["contracts"] != 0}
+    for gone in [k for k in exiting if k not in live_tickers]:
+        log(f"EXIT STATE CLEARED {gone} -- position no longer open on the exchange")
+        exiting.pop(gone, None)
+        session["exits"] = session.get("exits", 0) + 1
 
     # 3. ENTRY -- gated by kill switch and loss cap.
     allowed, why = entries_allowed(session)
