@@ -70,6 +70,32 @@ KALSHI_PRIVATE_KEY_PATH = _env("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pe
 # Enforced on every order in live_executor.place_order().
 LIVE_MAX_CONTRACTS = 4
 
+# Daily realized-loss cap for live_trader.py. On breach: NO NEW ENTRIES for the
+# rest of the UTC day; open positions still ride and still exit (halting exits
+# would strand capital in exactly the scenario the cap exists to protect
+# against). Resets at 00:00 UTC.
+#
+# $20 chosen deliberately, not arbitrarily. Worst case per trade is
+# 4 contracts x $1.00 = $4 lost if a position settles worthless, so $20 is ~5
+# maximum-loss trades. At the strategy's validated ~75% target-hit rate, five
+# max-loss trades in one day is far outside ordinary variance and reads as
+# "something is wrong" (model drift, a bad feed, a market regime the model was
+# never fitted on) rather than a bad run. It is also ~20% of the funded demo
+# balance, so it trips well before the account is meaningfully damaged. Revisit
+# once real per-day P&L variance has been observed rather than assumed.
+LIVE_DAILY_LOSS_CAP = 20.00
+
+# Kill switch. If this file EXISTS, no new entries are opened -- checked every
+# cycle, before anything else. A filesystem check on purpose: it must work when
+# the process is wedged, unreachable, or mid-failure, so it depends on nothing
+# the program itself controls. Create it to halt, delete it to resume:
+#     type nul > STOP_TRADING        (Windows)
+#     touch STOP_TRADING             (POSIX)
+# Exits are deliberately NOT blocked -- a kill switch that traps you in an open
+# position is worse than no kill switch.
+LIVE_KILL_SWITCH_FILE = Path(__file__).parent / "STOP_TRADING"
+
+
 
 # How many 1-min bars to keep in memory / request per refresh.
 # 300 bars = 5 hours: enough for EMA63 warmup plus volume baselines.

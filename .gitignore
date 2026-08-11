@@ -59,6 +59,11 @@ data/bot_alert_state.json
 # real order can never be confused with a simulated one.
 data/live_orders.csv
 
+# live_trader.py runtime state: the daily loss-cap tally, and the kill-switch
+# flag. Both are machine-local operational state, not source.
+data/live_session.json
+STOP_TRADING
+
 # Bulk historical research data (Coinbase 1-min bars, Kalshi settled markets
 # and candlesticks, feature tables, walk-forward predictions) -- large
 # (~33MB total), fully regenerable via the scripts in each research/*/scripts/
