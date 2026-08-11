@@ -327,12 +327,24 @@ def run_cycle(session: dict) -> dict:
     # re-price at the current ask and re-validate that the edge still clears; if
     # the market has moved past what the model called profitable, skip the trade
     # rather than chase it.
-    q = market_quote(market.ticker)
+    # Re-read from THE SAME SOURCE evaluate_trade() priced off (get_active_market,
+    # the /markets list endpoint). Using /markets/{ticker} here instead compared
+    # two feeds that disagree materially and persistently -- measured at the same
+    # instant: list bid/ask 0.22/0.23 (1c spread) vs single 0.11/0.37 (26c). That
+    # made every evaluation look like the market had "moved" 7-15c, and this
+    # guard then declined 5 of 7 valid signals for a phantom reason, so the bot
+    # placed ZERO orders for over an hour. Consistency matters more here than
+    # which feed is nominally fresher: the guard exists to catch movement between
+    # evaluation and send, and it can only do that if both reads are comparable.
+    fresh_market = get_active_market()
+    if fresh_market is None or fresh_market.ticker != market.ticker:
+        log(f"  {market.ticker} no longer the active market; skipping")
+        return session
     if d.side == "yes":
-        fresh = _f(q.get("yes_ask_dollars"))
+        fresh = _f(fresh_market.yes_ask)
         side = "bid"
     else:
-        fresh = 1.0 - _f(q.get("yes_bid_dollars"))
+        fresh = 1.0 - _f(fresh_market.yes_bid)
         side = "ask"
     if not (0.0 < fresh < 1.0):
         log(f"  no usable fresh quote for {market.ticker} ({fresh}); skipping")
