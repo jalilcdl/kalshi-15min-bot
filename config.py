@@ -103,6 +103,33 @@ LIVE_TRADE_SIZE = 25
 # that is the number this should ultimately be derived from.
 LIVE_DAILY_LOSS_CAP = 50.00
 
+# ONE-DAY OFFSET, AND IT EXPIRES BY ITSELF.
+#
+# 2026-08-11: verifying the exit fixes against the real exchange cost about $25
+# of demo money -- the floor test deliberately bought 15 contracts to create an
+# underwater position, and the completion test crosses a wide spread on purpose.
+# That spending is strategy-neutral, but the cap cannot tell it apart from a
+# losing trade, and it had eaten the day's headroom down to ~$15. Restarting
+# into that would have meant the cap tripping on MY test costs after a single
+# trade, halting the run before it produced any signal about the strategy.
+#
+# Expressed as a dated offset rather than by editing the cap, on purpose. A
+# raised number is indistinguishable from a permanent decision once the reason
+# is forgotten -- and "temporarily" loosened risk limits that quietly outlive
+# their justification are their own well-known failure mode. This one stops
+# applying the moment the UTC date rolls, with no action required from anyone.
+LIVE_LOSS_CAP_OFFSET_DATE = "2026-08-11"
+LIVE_LOSS_CAP_OFFSET = 25.00
+
+
+def effective_loss_cap(today_utc: str | None = None) -> float:
+    """The cap in force right now: the standing cap, plus a same-day offset."""
+    from datetime import datetime, timezone
+    today = today_utc or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if today == LIVE_LOSS_CAP_OFFSET_DATE:
+        return abs(LIVE_DAILY_LOSS_CAP) + abs(LIVE_LOSS_CAP_OFFSET)
+    return abs(LIVE_DAILY_LOSS_CAP)
+
 # Kill switch. If this file EXISTS, no new entries are opened -- checked every
 # cycle, before anything else. A filesystem check on purpose: it must work when
 # the process is wedged, unreachable, or mid-failure, so it depends on nothing

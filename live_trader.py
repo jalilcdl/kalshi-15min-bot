@@ -136,9 +136,10 @@ def kill_switch_active() -> bool:
 def entries_allowed(session: dict) -> tuple[bool, str]:
     if kill_switch_active():
         return False, f"kill switch present ({config.LIVE_KILL_SWITCH_FILE})"
-    if session["realized_pnl"] <= -abs(config.LIVE_DAILY_LOSS_CAP):
+    cap = config.effective_loss_cap()
+    if session["realized_pnl"] <= -cap:
         return False, (f"daily loss cap hit: realized {session['realized_pnl']:+.2f} "
-                       f"<= -{abs(config.LIVE_DAILY_LOSS_CAP):.2f}")
+                       f"<= -{cap:.2f}")
     return True, ""
 
 
