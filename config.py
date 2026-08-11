@@ -105,6 +105,39 @@ LIVE_DAILY_LOSS_CAP = 20.00
 # position is worse than no kill switch.
 LIVE_KILL_SWITCH_FILE = Path(__file__).parent / "STOP_TRADING"
 
+# --- Exit completion (live_trader.py) ----------------------------------------
+# Once the bot commits to exiting a position it works the remainder down every
+# cycle until flat, rather than re-deciding from scratch and abandoning a
+# partial fill because the price moved. These bound that behaviour.
+#
+# ORDER TYPE: exits stay IOC, deliberately, even though switching ENTRIES to
+# resting GTC is what fixed the entry no-fill problem. The two cases are not
+# symmetric. An entry has no deadline -- if it never fills you simply do not
+# trade, which is free. An exit has a hard deadline at window close, and a
+# resting exit that fails to fill leaves you holding the position through
+# settlement, which is the exact outcome the exit exists to avoid. IOC only ever
+# takes liquidity that genuinely exists right now, and repeating it across
+# sweeps and cycles accumulates the same fills a resting order would have
+# collected, without the risk of sitting unfilled at expiry. The cost is the
+# taker fee (maker is free on this series) -- an accepted, quantified price for
+# certainty of exit.
+EXIT_SWEEPS_PER_CYCLE = 3        # IOCs per cycle; the book replenishes in seconds,
+                                 # so several small takes beat one large one that
+                                 # clears the touch and cancels the rest
+EXIT_SWEEP_PAUSE_SECONDS = 2.0   # let the book refill between sweeps
+EXIT_MAX_ATTEMPTS = 10           # give up after this many cycles of trying
+EXIT_COMMIT_FLOOR = 0.0          # a committed exit keeps working while the gain
+                                 # is at or above this (0.0 = break-even). It
+                                 # rides a dip from +54% to +12% -- that is the
+                                 # point -- but will not turn a profit-take into
+                                 # a stop-loss, which was never validated and
+                                 # which EV does not favour anyway
+EXIT_GIVE_UP_MINUTES = 1.5       # inside this much time to close, stop trying and
+                                 # let the remainder settle -- chasing liquidity
+                                 # into the settlement print is how you get the
+                                 # worst possible fills
+
+
 
 
 # How many 1-min bars to keep in memory / request per refresh.

@@ -51,6 +51,12 @@ _session.headers["User-Agent"] = "kalshi-15min-intel-bot/1.0 (personal use)"
 _private_key = None
 
 
+class KalshiTransportError(RuntimeError):
+    """Network failed repeatedly. Distinct from KalshiAuthError so a caller can
+    tell 'the exchange is unreachable' from 'your credentials are wrong' -- the
+    first is worth retrying, the second never is."""
+
+
 class KalshiAuthError(RuntimeError):
     """Credential or signing problem -- distinct from an HTTP/API failure so
     callers can tell 'you are not set up' from 'the request failed'."""
@@ -128,7 +134,21 @@ def _request(path: str, params: dict | None = None, timeout: int = 20,
             "KALSHI-ACCESS-TIMESTAMP": ts,
             "KALSHI-ACCESS-SIGNATURE": _sign(ts, "GET", full_path),
         }
-        resp = _session.get(base + path, params=params, headers=headers, timeout=timeout)
+        # Transport errors must be retried too. Previously only HTTP status codes
+        # (429/5xx) were retried, so a ConnectionError raised by the socket layer
+        # propagated straight out and killed the whole cycle. Measured 10
+        # RemoteDisconnected errors in one session -- and a cycle lost mid-exit is
+        # precisely when losing a cycle costs the most, because the position stays
+        # open a further 60s while the price moves.
+        try:
+            resp = _session.get(base + path, params=params, headers=headers,
+                                timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt < retries - 1:
+                time.sleep(0.4 * (2 ** attempt) + 0.5)
+                continue
+            raise KalshiTransportError(
+                f"GET {path} failed after {retries} attempts: {exc}") from exc
 
         if resp.status_code == 401:
             raise KalshiAuthError(
