@@ -19,7 +19,7 @@ looking at the wrong file.
 1. DEMO-ONLY, ENFORCED IN CODE. Every write call checks KALSHI_ENV=="demo" and
    raises otherwise. Phase 2 has no business touching production, and honouring
    that by convention alone is exactly how accidents happen.
-2. SIZE CAP. LIVE_MAX_CONTRACTS (4) is enforced on every order.
+2. SIZE CAP. LIVE_MAX_CONTRACTS (25) is enforced on every order.
 3. WRITE-AHEAD IDEMPOTENCY. The client_order_id is generated and written to disk
    BEFORE the request is sent. If the process dies mid-flight, or the response
    is lost to a timeout, the retry reuses the same id and the exchange dedupes

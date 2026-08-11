@@ -19,7 +19,7 @@ No shared state, no shared log, no shared vocabulary.
 === SAFETY RAILS ===
 1. DEMO ONLY. live_executor._require_demo() raises on every write path when
    KALSHI_ENV != "demo". This module additionally refuses to start.
-2. SIZE CAP. config.LIVE_MAX_CONTRACTS (4), enforced inside place_order().
+2. SIZE CAP. config.LIVE_MAX_CONTRACTS (25), enforced inside place_order().
 3. DAILY LOSS CAP. config.LIVE_DAILY_LOSS_CAP. On breach: NO NEW ENTRIES for
    the rest of the UTC day. Existing positions still ride and still exit --
    halting exits on a loss cap would strand capital in the exact scenario the
@@ -309,7 +309,10 @@ def run_cycle(session: dict) -> dict:
     if d.action != "enter":
         return session
 
-    n = min(config.LIVE_MAX_CONTRACTS, config.PAPER_TRADE_SIZE)
+    # Intended size, independently capped by place_order(). Deliberately NOT
+    # PAPER_TRADE_SIZE -- that is the simulator's size and coupling live
+    # sizing to it hid the fact that raising the cap changed nothing.
+    n = min(config.LIVE_TRADE_SIZE, config.LIVE_MAX_CONTRACTS)
 
     # RE-READ THE BOOK IMMEDIATELY BEFORE SENDING.
     # evaluate_trade() prices off a market snapshot that is already seconds old

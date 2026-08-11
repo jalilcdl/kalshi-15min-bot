@@ -64,11 +64,21 @@ KALSHI_API_KEY_ID = _env("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = _env("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
 
 # --- Live execution (live_executor.py) ---------------------------------------
-# Hard cap on contracts per real order. Jalil's chosen size for real execution
-# is 4 (down from the 10 used in paper trading); Phase 0 showed size 4 is
-# economically neutral vs 10 once fees round correctly, so the cap costs no ROI.
-# Enforced on every order in live_executor.place_order().
-LIVE_MAX_CONTRACTS = 4
+# Hard cap on contracts per real order, enforced in live_executor.place_order()
+# on EVERY order. Raised 4 -> 25 on 2026-08-11 at Jalil's request (demo only).
+# Phase 0 showed size is economically neutral once fees round correctly, so the
+# number itself costs no ROI -- but see LIVE_DAILY_LOSS_CAP: at 25 contracts a
+# single losing trade can exceed the whole daily loss cap, which changes what
+# that cap means.
+LIVE_MAX_CONTRACTS = 25
+
+# Contracts the trader ASKS for on each entry. Kept separate from the cap on
+# purpose: the cap is a safety gate that must hold whatever the sizing logic
+# does, and a gate that is defined as "whatever we intended to send" cannot
+# catch a sizing bug. Entry size was previously min(cap, PAPER_TRADE_SIZE),
+# which silently pinned live orders to the PAPER trader's size -- raising the
+# cap alone would have sent 10, not 25.
+LIVE_TRADE_SIZE = 25
 
 # Daily realized-loss cap for live_trader.py. On breach: NO NEW ENTRIES for the
 # rest of the UTC day; open positions still ride and still exit (halting exits
