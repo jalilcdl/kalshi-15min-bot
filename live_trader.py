@@ -50,6 +50,7 @@ import requests
 
 import config
 import kalshi_auth
+from singleton import AlreadyRunning, SingleInstance
 import live_executor as ex
 from coinbase_feed import fetch_1min_candles, fetch_spot_price
 from fees import kalshi_fee
@@ -143,6 +144,28 @@ def run_cycle(session: dict) -> dict:
             if upd and upd["status"] != row["status"]:
                 log(f"order {row['client_order_id'][:8]} {row['status']} -> {upd['status']} "
                     f"(fill={upd['fill_count']})")
+    # Cancel resting ENTRY orders whose window is no longer tradeable. A GTC
+    # entry that never filled must not linger into the settlement print, or into
+    # a later window, where it would fill on terms the model never approved.
+    for o in ex.get_resting_orders():
+        row = next((r for r in ex.load_orders()
+                    if r.get("order_id") == o.get("order_id")), None)
+        if not row or "entry" not in row.get("note", ""):
+            continue
+        q = market_quote(row["ticker"])
+        stale = q.get("status") != "active"
+        if not stale:
+            try:
+                closes = datetime.fromisoformat(q["close_time"].replace("Z", "+00:00"))
+                stale = (closes - datetime.now(timezone.utc)).total_seconds() / 60.0 \
+                    <= config.FINAL_MINUTES_NOISY
+            except Exception:
+                stale = False
+        if stale:
+            c = ex.cancel_order(o["order_id"])
+            log(f"cancelled stale resting entry {o['order_id'][:8]} on {row['ticker']} "
+                f"(window no longer tradeable) ok={c['ok']}")
+
     rec = ex.reconcile()
     if not rec["in_sync"]:
         log(f"DRIFT: positions_not_in_log={rec['positions_not_in_local_log']} "
@@ -255,8 +278,24 @@ def run_cycle(session: dict) -> dict:
     log(f"ENTRY SIGNAL {market.ticker} {d.side.upper()} edge={edge_now*100:+.1f}c "
         f"(was {d.edge*100:+.1f}c, moved {slip*100:+.1f}c) "
         f"-> {n} contracts, side={side} price={px:.4f}")
+    # RESTING (good_till_canceled), not IOC.
+    #
+    # Five consecutive IOC entries failed to fill. The cause was NOT the order
+    # construction -- a controlled test confirmed side="ask" with a YES-terms
+    # price does open a NO position (0.00 -> -1.00, fill action=sell
+    # outcome=no). The cause is that this book flickers between one- and
+    # two-sided within seconds, so an IOC priced at the touch loses the race
+    # between quote-read and arrival. A resting order does not race: it sits at
+    # our price until the market comes to it.
+    #
+    # It is also strictly better economically. Phase 2b proved maker fills on
+    # this series are charged EXACTLY $0.00 (fee_type="quadratic", not
+    # "quadratic_with_maker_fees"), where a taker fill at these prices costs
+    # 1-4% of stake. The tradeoff is fill uncertainty, which is handled: the
+    # per-cycle refresh_order_status() picks up late fills, and stale entry
+    # orders are cancelled below once their window stops being tradeable.
     r = ex.place_order(market.ticker, side, n, px,
-                       time_in_force="immediate_or_cancel",
+                       time_in_force="good_till_canceled",
                        note=f"phase3 entry {d.side} edge={d.edge:.4f}")
     log(f"  entry order: status={r['status']} fill={r.get('fill_count')} "
         f"avg={r.get('avg_fill_price')} fee={r.get('fee_paid')} "
@@ -324,4 +363,12 @@ def main():
 
 if __name__ == "__main__":
     _setup_console_logging()
-    sys.exit(main())
+    # SINGLE INSTANCE. Two traders each honour LIVE_MAX_CONTRACTS individually
+    # while together doubling account exposure, and client_order_id cannot see
+    # across processes. This happened for real on 2026-08-11.
+    try:
+        with SingleInstance("live_trader"):
+            sys.exit(main())
+    except AlreadyRunning as exc:
+        log(f"REFUSING TO START: {exc}")
+        sys.exit(2)
