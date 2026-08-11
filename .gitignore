@@ -83,3 +83,6 @@ research/*/results/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Singleton lock files (runtime state, machine-local)
+.*.lock
