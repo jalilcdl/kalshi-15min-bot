@@ -53,6 +53,12 @@ data/trade_log.csv
 # suppress them. Added 2026-08-04 with the persisted-state fix.
 data/bot_alert_state.json
 
+# live_executor.py's REAL order log. Same reasoning as trade_log.csv -- a
+# personal trading record, meaningless off the machine that produced it, and
+# not something to publish. Kept deliberately separate from trade_log.csv so a
+# real order can never be confused with a simulated one.
+data/live_orders.csv
+
 # Bulk historical research data (Coinbase 1-min bars, Kalshi settled markets
 # and candlesticks, feature tables, walk-forward predictions) -- large
 # (~33MB total), fully regenerable via the scripts in each research/*/scripts/

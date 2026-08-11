@@ -63,6 +63,14 @@ KALSHI_TRADE_BASE = KALSHI_API_BASES.get(KALSHI_ENV, KALSHI_API_BASES["demo"])
 KALSHI_API_KEY_ID = _env("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = _env("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
 
+# --- Live execution (live_executor.py) ---------------------------------------
+# Hard cap on contracts per real order. Jalil's chosen size for real execution
+# is 4 (down from the 10 used in paper trading); Phase 0 showed size 4 is
+# economically neutral vs 10 once fees round correctly, so the cap costs no ROI.
+# Enforced on every order in live_executor.place_order().
+LIVE_MAX_CONTRACTS = 4
+
+
 # How many 1-min bars to keep in memory / request per refresh.
 # 300 bars = 5 hours: enough for EMA63 warmup plus volume baselines.
 LOOKBACK_BARS = 300
