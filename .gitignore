@@ -94,3 +94,4 @@ live_run.err
 # diagnostic + backup artefacts (contain live account state)
 data/balance_diagnostic.json
 data/*.bak
+live_supervisor.log

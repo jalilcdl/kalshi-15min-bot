@@ -766,5 +766,18 @@ if __name__ == "__main__":
         with SingleInstance("live_trader"):
             sys.exit(main())
     except AlreadyRunning as exc:
-        log(f"REFUSING TO START: {exc}")
-        sys.exit(2)
+        # A supervisor (Windows Task Scheduler, every few minutes) re-launches
+        # this to restart it if it ever dies. Every launch while a healthy
+        # instance holds the lock lands here, so it must NOT write to the
+        # trading log -- hundreds of "refusing to start" lines a day would
+        # drown the record the audit and any human actually read. It goes to a
+        # dedicated supervisor log instead, which doubles as proof the
+        # supervisor is alive and the lock is doing its job.
+        SUPERVISOR_LOG = Path(__file__).parent / "live_supervisor.log"
+        try:
+            with SUPERVISOR_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{_stamp()}] healthy instance already running; "
+                         f"supervisor stood down ({exc})\n")
+        except Exception:
+            pass
+        sys.exit(0)          # not a failure: the trader IS running
