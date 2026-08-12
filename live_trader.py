@@ -82,7 +82,14 @@ from kalshi_feed import get_active_market
 from paper_trader import evaluate_trade
 
 SESSION_FILE = Path(__file__).parent / "data" / "live_session.json"
-LOG_FILE = Path(__file__).parent / "live_trader.log"
+# The supervised process writes here ITSELF rather than via shell redirection.
+# A ">> live_run.log" in the launcher fails outright while a healthy trader
+# holds the file ("The process cannot access the file because it is being used
+# by another process"), so every supervisor tick died inside cmd before Python
+# started -- no stand-down, no log line, and a permanent LastTaskResult=1 that
+# would hide a genuine failure. Python opens in shared append mode, so a
+# briefly-overlapping instance can write its one stand-down line safely.
+LOG_FILE = Path(__file__).parent / "live_run.log"
 
 
 def _setup_console_logging():

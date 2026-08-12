@@ -35,4 +35,12 @@ REM  Full interpreter path on purpose: a scheduled task does not inherit the
 REM  interactive PATH, and "python" may simply not resolve.
 REM ===========================================================================
 cd /d "C:\Users\jalil\OneDrive\Desktop\kalshi-15min-bot"
-"C:\Users\jalil\AppData\Local\Programs\Python\Python312\pythonw.exe" live_trader.py >> live_run.log 2>> live_run.err
+REM  NO SHELL REDIRECTION, deliberately. ">> live_run.log" fails outright while
+REM  a healthy trader holds that file ("The process cannot access the file
+REM  because it is being used by another process"), so every supervisor tick
+REM  died inside cmd before python even started: no stand-down, no log line, and
+REM  a permanent LastTaskResult=1 -- exactly the noise that hides a real failure
+REM  later. Under pythonw sys.stdout is None, so live_trader's
+REM  _setup_console_logging() opens live_run.log itself in shared append mode,
+REM  which briefly-overlapping instances can do safely.
+"C:\Users\jalil\AppData\Local\Programs\Python\Python312\pythonw.exe" live_trader.py
