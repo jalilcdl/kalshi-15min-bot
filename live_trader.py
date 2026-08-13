@@ -140,13 +140,31 @@ def kill_switch_active() -> bool:
     return Path(config.LIVE_KILL_SWITCH_FILE).exists()
 
 
-def entries_allowed(session: dict) -> tuple[bool, str]:
+def entries_allowed(session: dict, trade_risk: float = 0.0) -> tuple[bool, str]:
+    """May we open a new position, given what THIS trade would put at risk?
+
+    `trade_risk` is the worst case for the entry being considered -- every
+    contract settling worthless. Passing 0 asks the old question ("has the cap
+    already been breached?"), which is still what the top-of-cycle check wants.
+
+    Checking only realized P&L meant the cap could not see the trade it was
+    about to approve, so the day's worst case was the cap PLUS one full
+    position: -$50 + 25 x $0.75 = -$68.75 against a $50 limit. A limit that the
+    very next trade can legally blow through is not a limit.
+    """
     if kill_switch_active():
         return False, f"kill switch present ({config.LIVE_KILL_SWITCH_FILE})"
     cap = config.effective_loss_cap()
     if session["realized_pnl"] <= -cap:
         return False, (f"daily loss cap hit: realized {session['realized_pnl']:+.2f} "
                        f"<= -{cap:.2f}")
+    if trade_risk > 0:
+        worst = session["realized_pnl"] - trade_risk
+        if worst <= -cap:
+            return False, (f"would breach the cap: realized "
+                           f"{session['realized_pnl']:+.2f} minus ${trade_risk:.2f} "
+                           f"at risk = {worst:+.2f} <= -{cap:.2f} "
+                           f"(headroom ${cap + session['realized_pnl']:.2f})")
     return True, ""
 
 
@@ -217,6 +235,31 @@ def book_touch(ticker: str, retries: int = 3) -> dict:
     return {}
 
 
+def size_for_edge(edge: float, cost_per_contract: float) -> tuple[int, float]:
+    """Contracts to buy, from conviction and what a contract actually costs.
+
+    Returns (contracts, risk_budget_dollars). See config.SIZING_* for why this
+    is a dollar budget scaled by edge rather than Kelly.
+
+    The two inputs are deliberately different in kind: `edge` is how much the
+    model thinks this trade is worth, `cost_per_contract` is what one unit of it
+    costs. Dividing one by the other is what stops a thin edge on an expensive
+    contract from taking the same stake as a strong edge on a cheap one -- on
+    2026-08-13 a 3.4c edge (barely over the 3c floor) took 25 contracts at 0.63
+    and risked $15.75, the same stake a 27c edge got.
+    """
+    if cost_per_contract <= 0:
+        return 0, 0.0
+    span = config.SIZING_FULL_EDGE - config.PAPER_TRADE_MIN_EDGE
+    frac = 0.0 if span <= 0 else (edge - config.PAPER_TRADE_MIN_EDGE) / span
+    frac = max(0.0, min(1.0, frac))
+    budget = (config.SIZING_MIN_RISK
+              + (config.SIZING_MAX_RISK - config.SIZING_MIN_RISK) * frac)
+    n = int(budget / cost_per_contract)          # floor: never round risk UP
+    n = max(0, min(n, config.LIVE_MAX_CONTRACTS))
+    return n, budget
+
+
 def _f(v, default=0.0):
     try:
         return float(v)
@@ -226,8 +269,46 @@ def _f(v, default=0.0):
 
 # --- the cycle ---------------------------------------------------------------
 
+def roll_session_if_new_day(session: dict) -> dict:
+    """Start a fresh day when the UTC date changes, IN THE RUNNING PROCESS.
+
+    load_session() only rolls at startup, so a process that stays up across
+    midnight kept writing yesterday's date forever. Two consequences, both
+    observed on 2026-08-13 after an 18-hour run:
+
+      - `--status` is a SEPARATE process. It calls load_session(), sees the
+        file's stale date, decides the session is not today's, and reports a
+        zeroed one: "entries 0, realized +0.00" while the live trader had done
+        11 entries and was up $72.41. A status command that confidently
+        reports nothing happened is worse than having no status command.
+      - the entries/exits counters silently accumulated across days.
+
+    realized_pnl was never wrong -- run_cycle recomputes it from the exchange
+    each cycle against a freshly computed date -- so the loss cap was always
+    working on the right number. This is an observability fix, not a safety one.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if session.get("utc_date") == today:
+        return session
+    log(f"UTC DATE ROLL {session.get('utc_date')} -> {today}: resetting daily "
+        f"counters (was entries={session.get('entries', 0)} "
+        f"exits={session.get('exits', 0)} realized={session.get('realized_pnl', 0):+.4f}); "
+        f"loss cap now ${config.effective_loss_cap():.2f}")
+    session["utc_date"] = today
+    session["entries"] = 0
+    session["exits"] = 0
+    session["exit_fills"] = 0
+    session["realized_pnl"] = 0.0     # recomputed from the exchange below
+    session["halted_reason"] = ""
+    # session["exiting"] is deliberately KEPT: a position mid-exit at midnight
+    # is still mid-exit at 00:01, and dropping that state would abandon it --
+    # the exact bug the persistence work exists to prevent.
+    return session
+
+
 def run_cycle(session: dict) -> dict:
     """One pass: reconcile, then exits, then (maybe) an entry."""
+    session = roll_session_if_new_day(session)
     # 1. RECONCILE FIRST, ALWAYS. Never act on stale local state.
     for row in ex.load_orders():
         if row.get("status") in ("resting", "sending", "unknown") and row.get("order_id"):
@@ -619,9 +700,10 @@ def run_cycle(session: dict) -> dict:
     if d.action != "enter":
         return session
 
-    # Intended size, independently capped by place_order(). Deliberately NOT
-    # PAPER_TRADE_SIZE -- that is the simulator's size and coupling live
-    # sizing to it hid the fact that raising the cap changed nothing.
+    # Provisional only -- used for the fee estimate in the re-price check below.
+    # The size actually sent is computed from the FRESH edge and FRESH cost once
+    # the book has been re-read, because sizing off a stale edge would defeat
+    # the point of sizing by conviction at all.
     n = min(config.LIVE_TRADE_SIZE, config.LIVE_MAX_CONTRACTS)
 
     # RE-READ THE BOOK IMMEDIATELY BEFORE SENDING.
@@ -668,9 +750,28 @@ def run_cycle(session: dict) -> dict:
             f"{(edge_now or 0)*100:+.1f}c < {config.PAPER_TRADE_MIN_EDGE*100:.0f}c -- SKIP, not chasing")
         return session
     px = round(fresh, 4) if d.side == "yes" else round(1.0 - fresh, 4)
+
+    # SIZE BY CONVICTION, off the fresh edge and what a contract actually costs.
+    # `fresh` is the cost per contract in the units we are buying (yes ask, or
+    # 1 - yes bid for NO), which is exactly the per-contract downside.
+    n, budget = size_for_edge(edge_now, fresh)
+    if n <= 0:
+        log(f"  {market.ticker} sized to 0 contracts "
+            f"(edge {edge_now*100:+.1f}c, budget ${budget:.2f}, cost {fresh:.4f}) -- skip")
+        return session
+    trade_risk = n * fresh
+
+    # NOW ask the cap whether it can afford this specific trade. The earlier
+    # check only knew the day's realized P&L; this one knows the stake.
+    ok_risk, why_risk = entries_allowed(session, trade_risk=trade_risk)
+    if not ok_risk:
+        log(f"  {market.ticker} ENTRY REFUSED -- {why_risk}")
+        return session
+
     log(f"ENTRY SIGNAL {market.ticker} {d.side.upper()} edge={edge_now*100:+.1f}c "
         f"(was {d.edge*100:+.1f}c, moved {slip*100:+.1f}c) "
-        f"-> {n} contracts, side={side} price={px:.4f}")
+        f"-> {n} contracts (budget ${budget:.2f}, risking ${trade_risk:.2f} "
+        f"at {fresh:.4f}/contract), side={side} price={px:.4f}")
     # RESTING (good_till_canceled), not IOC.
     #
     # Five consecutive IOC entries failed to fill. The cause was NOT the order

@@ -80,6 +80,43 @@ LIVE_MAX_CONTRACTS = 25
 # cap alone would have sent 10, not 25.
 LIVE_TRADE_SIZE = 25
 
+# --- EDGE-PROPORTIONAL SIZING ------------------------------------------------
+# LIVE_TRADE_SIZE above is now only a CEILING. Actual size comes from
+# live_trader.size_for_edge(), which converts conviction into a dollar risk
+# budget and then into contracts.
+#
+# WHY NOT KELLY. Kelly is the principled default and it is wrong for this
+# problem. For a contract bought at p paying $1, f* = (q-p)/(1-p), so dollars
+# at risk RISE as p rises -- you risk p to win (1-p). Measured on real entries
+# with a $127 bankroll, full Kelly wanted $27.78 on a 0.84 favourite and $69.77
+# on a 0.70 one. The concern being fixed is precisely that expensive contracts
+# take too much money on thin conviction, and Kelly makes that worse, not
+# better. It also assumes the model's probabilities are well calibrated live,
+# which a ~50% live hit rate over ~30 trades does not yet establish.
+#
+# So: a dollar budget that scales linearly with edge, converted to contracts by
+# dividing by what one contract actually costs. Linear-in-edge is the shape
+# Kelly implies anyway (f* is proportional to edge); dividing by cost is what
+# keeps a favourite from silently becoming the biggest bet on the book.
+#
+#   frac    = clamp((edge - PAPER_TRADE_MIN_EDGE) / (SIZING_FULL_EDGE - MIN), 0, 1)
+#   budget  = SIZING_MIN_RISK + (SIZING_MAX_RISK - SIZING_MIN_RISK) * frac
+#   n       = clamp(int(budget / cost_per_contract), 0, LIVE_MAX_CONTRACTS)
+#
+# Denominated in DOLLARS on purpose: the daily loss cap is in dollars, so
+# sizing and the risk limit finally speak the same units. Previously sizing
+# counted contracts while the cap counted dollars, which is how a 3.4c edge
+# ended up risking $15.75 on 2026-08-13.
+SIZING_FULL_EDGE = 0.15      # edge at which the full risk budget is allocated;
+                             # ~2x the median live edge, reached but not common
+SIZING_MIN_RISK = 3.00       # a barely-qualifying edge still gets a real trade,
+                             # just a small one -- the alternative is a dead zone
+                             # just above the 3c threshold
+SIZING_MAX_RISK = 15.00      # most a single entry may risk. Also the ceiling the
+                             # pre-trade headroom check works against, so worst
+                             # case is now cap + 15 rather than cap + 25 x price.
+
+
 # Daily realized-loss cap for live_trader.py. On breach: NO NEW ENTRIES for the
 # rest of the UTC day; open positions still ride and still exit (halting exits
 # would strand capital in exactly the scenario the cap exists to protect
